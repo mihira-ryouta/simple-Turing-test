@@ -436,7 +436,9 @@
       showResult(data, guess);
     }
 
+    // =====================================================================
     //  オンライン (Socket.IO)
+    // =====================================================================
     function ensureSocket() {
       if (socket) return socket;
       socket = io();
@@ -552,8 +554,9 @@
       judgeBox.classList.add('hidden');
     }
 
-
+    // =====================================================================
     //  共通: 送信 / 判定 / 結果 / アンケート
+    // =====================================================================
     function send() {
       if (mode === 'online') sendOnline();
       else askSingle();
@@ -701,7 +704,7 @@
       e.target.classList.add('sel');
     });
 
-    // ゲーム後 
+    // --- ゲーム後 ---
     function backToSelect() {
       if (socket) { socket.disconnect(); socket = null; }
       document.getElementById('headerHint').textContent =

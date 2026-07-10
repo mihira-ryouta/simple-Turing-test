@@ -1,0 +1,18 @@
+# Render Blueprint (任意)。ダッシュボードから手動設定する場合は不要。
+services:
+  - type: web
+    name: ai-hanbetsu-game
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    # -w 1 は必須: マッチング状態をプロセス内メモリに持つため、ワーカーは1つに固定する
+    startCommand: gunicorn -k geventwebsocket.gunicorn.workers.GeventWebSocketWorker -w 1 --bind 0.0.0.0:$PORT app:app
+    envVars:
+      - key: SOCKETIO_ASYNC_MODE
+        value: gevent
+      - key: SECRET_KEY
+        generateValue: true
+      - key: EXPORT_TOKEN
+        generateValue: true
+      - key: GEMINI_API_KEY
+        sync: false   # ダッシュボードで手動設定する
