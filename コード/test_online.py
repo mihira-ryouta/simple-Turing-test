@@ -90,7 +90,7 @@ for col in ("ground_truth_identity", "backfilled", "queue_wait_ms",
 for col in ("char_count", "compose_time_ms", "displayed_delay_ms"):
     check(f"messages.{col}", col in msg_cols)
 
-
+# ============================================================
 print("2. 人対人 (force=human ×2)")
 c1 = socketio.test_client(app)
 c2 = socketio.test_client(app)
@@ -173,7 +173,7 @@ check("AI回答に compose_time_ms なし",
       all(m["compose_time_ms"] is None for m in ai_msgs))
 c3.disconnect()
 
-
+# ============================================================
 print("4. W切替 (αドロー・人間ドロー→タイムアウト→AI補填)")
 app_module.ALPHA_AI = 0.0  # 必ず「人間」を引かせる (GAME_FAST_DELAYでW=0.5秒)
 c4 = socketio.test_client(app)

@@ -27,6 +27,7 @@
   プロトタイプの直接割当: http://127.0.0.1:5000/?force=ai または ?force=human
 """
 
+import os
 import random
 import threading
 import time
@@ -40,9 +41,15 @@ import database as db
 import delay_model
 
 app = Flask(__name__)
-app.secret_key = "dev-secret-change-me"  # 本番では必ず変更すること
+# デプロイ時は環境変数 SECRET_KEY を必ず設定する (Renderなら generateValue で自動生成)
+app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-me")
 
-socketio = SocketIO(app, async_mode="threading", cors_allowed_origins="*")
+# async_mode: ローカル開発は threading、Render等の本番は gevent
+# (gunicorn の GeventWebSocketWorker と組み合わせる。render.yaml 参照)
+socketio = SocketIO(
+    app,
+    async_mode=os.environ.get("SOCKETIO_ASYNC_MODE", "threading"),
+    cors_allowed_origins="*")
 
 # 1ゲームの質問回数(これを過ぎたら判定フェーズへ)
 MAX_TURNS = 5
@@ -69,12 +76,15 @@ def index():
     return render_template("index.html")
 
 
+# ==========================================================================
 #  シングル(HTTP) ― 計測・遅延・プロンプト版管理を追加
 #
 #  注: シングルは現状「必ずAI」(人間マッチング基盤はオンライン側のみ)。
 #      その事実は assignment_mode='single_always_ai' として正直に記録する。
 #      画面上は「ランダム」と案内しているが、正体が既知の実験者が使う
 #      プロトタイプ用途では ?force=ai で明示するのが正しい使い方 (決定D9)。
+# ==========================================================================
+
 @app.route("/start", methods=["POST"])
 def start():
     """新しいゲームを開始。プロンプト/遅延モデルの版をこの時点で固定する(D8)。"""
@@ -236,7 +246,31 @@ def annotate():
     return jsonify({"status": "saved"})
 
 
+@app.route("/admin/export")
+def admin_export():
+    """
+    全データをJSONで返す (研究データの回収用)。
+    Render無料枠はファイルシステムが一時的で、再デプロイ・再起動・
+    スピンダウンのたびにSQLiteが消えるため、セッション終了ごとに
+    このエンドポイントを叩いてデータを手元に保存すること。
 
+    使い方: 環境変数 EXPORT_TOKEN を設定した上で
+      GET /admin/export?token=<EXPORT_TOKEN>
+    EXPORT_TOKEN が未設定の場合は安全側に倒して常に403を返す。
+    """
+    expected = os.environ.get("EXPORT_TOKEN")
+    if not expected or request.args.get("token", "") != expected:
+        return jsonify({"error": "unauthorized"}), 403
+    out = {}
+    with db._conn() as conn:
+        for table in ("games", "players", "messages",
+                      "annotations", "surveys"):
+            rows = conn.execute(f"SELECT * FROM {table}").fetchall()
+            out[table] = [dict(r) for r in rows]
+    return jsonify(out)
+
+
+# ==========================================================================
 #  オンライン(クイックマッチ) ― W事前ドロー方式 + AI補填
 #
 #  流れ (決定D4):
@@ -258,6 +292,7 @@ def annotate():
 #    人間が来るまで待ち続ける(AI切替なし)。assignment_mode='forced' で記録。
 #
 #  状態はサーバー側プロセス内メモリ。複数ワーカー化するなら Redis 等が必要。
+# ==========================================================================
 
 _waiting = []      # 待機エントリ {sid, identity, forced, joined_at, deadline_s, notified}
 _rooms = {}        # room_id -> 部屋の状態 dict
@@ -597,5 +632,7 @@ def _on_disconnect(*args):
 
 
 if __name__ == "__main__":
-    # 従来の app.run ではなく socketio.run で起動する
-    socketio.run(app, debug=True, port=5000)
+    # ローカル開発用の起動 (本番は gunicorn 経由: render.yaml 参照)
+    port = int(os.environ.get("PORT", 5000))
+    socketio.run(app, host="0.0.0.0", port=port,
+                 debug=os.environ.get("FLASK_DEBUG", "1") == "1")
