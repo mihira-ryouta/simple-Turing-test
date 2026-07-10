@@ -36,6 +36,7 @@
     .msg.you { align-self: flex-end; background: var(--you); }
     .msg.them { align-self: flex-start; background: var(--them); }
     .msg .label { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+    .wait-note { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 0; }
     .input-row { display: flex; gap: 8px; margin-top: 12px; }
     input[type=text] {
       flex: 1; padding: 12px; border-radius: 10px; border: 1px solid #333;
@@ -54,6 +55,7 @@
       background: var(--panel); text-align: center; font-size: 15px; }
     .result.correct { border: 2px solid #4caf50; }
     .result.wrong { border: 2px solid #e05656; }
+    .result.neutral { border: 2px solid #555; }
     .hidden { display: none; }
     .restart { margin-top: 12px; background: #444; }
 
@@ -69,12 +71,6 @@
     }
     .mode-btn.sel { border-color: var(--accent); background: #1d2235; }
     .mode-sub { font-size: 11px; color: var(--muted); font-weight: normal; }
-    .role-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
-    .role-btn {
-      flex: 1; min-width: 60px; background: #11141d; border: 1px solid #333;
-      color: var(--text); padding: 12px; border-radius: 8px; font-size: 14px; cursor: pointer;
-    }
-    .role-btn.sel { background: var(--accent); border-color: var(--accent); }
     .prep-note { font-size: 13px; color: #e0a85a; min-height: 18px; }
     .start-btn {
       background: var(--accent); padding: 16px; border-radius: 12px;
@@ -140,7 +136,7 @@
   <div class="app">
     <header>
       <h1>人工知能判別ゲーム</h1>
-      <p>あなたは質問者。相手に質問して、人間かAIかを当てよう。</p>
+      <p id="headerHint">相手はAIのことも、人間のこともあります。</p>
     </header>
 
     <!-- タイトル画面 -->
@@ -163,7 +159,7 @@
           シングル<span class="mode-sub">相手1体と1対1</span>
         </button>
         <button class="mode-btn" onclick="chooseEntry('group')">
-          グループ<span class="mode-sub">みんなで判別（準備中）</span>
+          オンライン<span class="mode-sub">クイックマッチ</span>
         </button>
       </div>
       <button class="ghost-btn" onclick="showScreen('titleScreen')">戻る</button>
@@ -172,7 +168,7 @@
     <!-- シングル -->
     <div class="screen menu-screen hidden" id="singleScreen">
       <div class="select-label">シングル対戦</div>
-      <p class="menu-desc">あなたが質問者になり、相手に質問して人間かAIかを当てます。相手が人間かAIかはランダムです。</p>
+      <p class="menu-desc">あなたが質問者になり、相手に質問して人間かAIかを当てます。</p>
       <div class="menu-actions">
         <button class="start-btn" onclick="startSinglePrep()">Start</button>
         <button class="ghost-btn" onclick="showScreen('modeScreen')">戻る</button>
@@ -183,23 +179,24 @@
     <div class="screen menu-screen hidden" id="prepScreen">
       <div class="spinner"></div>
       <div class="prep-text" id="prepText">対戦相手を準備しています…</div>
+      <button class="ghost-btn" onclick="cancelMatching()">キャンセル</button>
     </div>
 
     <!-- ルーム作成 (グループ) -->
     <div class="screen menu-screen hidden" id="roomCreateScreen">
-      <div class="select-label">ルームを作成</div>
+      <div class="select-label">オンライン対戦</div>
       <div class="mode-buttons">
         <button class="mode-btn" onclick="chooseVisibility('public')">
-          公開<span class="mode-sub">誰でも参加できる</span>
+          クイックマッチ<span class="mode-sub">すぐに対戦相手を探す</span>
         </button>
         <button class="mode-btn" onclick="chooseVisibility('private')">
-          プライベート<span class="mode-sub">合言葉で限定</span>
+          プライベート<span class="mode-sub">合言葉で限定（準備中）</span>
         </button>
       </div>
       <button class="ghost-btn" onclick="showScreen('modeScreen')">戻る</button>
     </div>
 
-    <!-- プライベート設定: 鍵 + 人数上限 -->
+    <!-- プライベート設定: 鍵 + 人数上限 (未実装のまま保持) -->
     <div class="screen menu-screen hidden" id="privateScreen">
       <div class="select-label">プライベートルームの設定</div>
       <label class="field-label">合言葉（ルームの鍵）</label>
@@ -212,34 +209,9 @@
         <button class="num-btn" data-n="8">8</button>
         <button class="num-btn" data-n="10">10</button>
       </div>
+      <div class="prep-note">※ プライベートルームはまだ遊べません（次の実装フェーズ）。</div>
       <div class="menu-actions">
-        <button class="start-btn" onclick="goToGameSettings()">次へ</button>
         <button class="ghost-btn" onclick="showScreen('roomCreateScreen')">戻る</button>
-      </div>
-    </div>
-
-    <!-- ゲーム設定: AI数 + AI側につく人数 -->
-    <div class="screen menu-screen hidden" id="gameSettingsScreen">
-      <div class="select-label">ゲーム設定</div>
-      <div class="room-summary" id="roomSummary"></div>
-      <label class="field-label">AIの数</label>
-      <div class="num-row" id="aiCountRow">
-        <button class="num-btn" data-n="0">0</button>
-        <button class="num-btn sel" data-n="1">1</button>
-        <button class="num-btn" data-n="2">2</button>
-        <button class="num-btn" data-n="3">3</button>
-      </div>
-      <label class="field-label">AI側につく人（AIっぽい人間役）の人数</label>
-      <div class="num-row" id="humanAsAiRow">
-        <button class="num-btn sel" data-n="0">0</button>
-        <button class="num-btn" data-n="1">1</button>
-        <button class="num-btn" data-n="2">2</button>
-        <button class="num-btn" data-n="3">3</button>
-      </div>
-      <div class="prep-note" id="groupPrepNote"></div>
-      <div class="menu-actions">
-        <button class="start-btn" onclick="startGroupGame()">ゲーム開始</button>
-        <button class="ghost-btn" onclick="backFromGameSettings()">戻る</button>
       </div>
     </div>
 
@@ -248,14 +220,15 @@
     <div class="turn-info" id="turnInfo"></div>
 
     <div class="chat" id="chat"></div>
+    <div class="wait-note hidden" id="waitNote">相手の返事を待っています…</div>
 
-    <!-- 質問入力 -->
+    <!-- 入力 (質問者: 質問 / 回答者: 回答) -->
     <div class="input-row" id="inputRow">
       <input type="text" id="questionInput" placeholder="相手に質問する…" autocomplete="off">
-      <button id="askBtn">質問</button>
+      <button id="askBtn">送信</button>
     </div>
 
-    <!-- 判定フェーズ -->
+    <!-- 判定フェーズ (質問者のみ) -->
     <div class="judge-box hidden" id="judgeBox">
       <div class="q">相手は人間？ それともAI？</div>
       <div class="judge-buttons">
@@ -271,23 +244,25 @@
     <div class="survey hidden" id="survey">
       <div class="survey-title">アンケート（任意・研究用）</div>
 
-      <label class="survey-label">判定にどれくらい自信がありましたか？</label>
-      <div class="confidence-row" id="confidenceRow">
-        <button type="button" data-v="1">1</button>
-        <button type="button" data-v="2">2</button>
-        <button type="button" data-v="3">3</button>
-        <button type="button" data-v="4">4</button>
-        <button type="button" data-v="5">5</button>
-      </div>
-      <div class="confidence-hint">1 = 全く自信なし　5 = 確信していた</div>
+      <div id="surveyConfidenceBlock">
+        <label class="survey-label">判定にどれくらい自信がありましたか？</label>
+        <div class="confidence-row" id="confidenceRow">
+          <button type="button" data-v="1">1</button>
+          <button type="button" data-v="2">2</button>
+          <button type="button" data-v="3">3</button>
+          <button type="button" data-v="4">4</button>
+          <button type="button" data-v="5">5</button>
+        </div>
+        <div class="confidence-hint">1 = 全く自信なし　5 = 確信していた</div>
 
-      <label class="survey-label">何を見て判断しましたか？</label>
-      <div class="basis-row" id="basisRow">
-        <button type="button" data-b="言葉遣い">言葉遣い</button>
-        <button type="button" data-b="反応速度">反応速度</button>
-        <button type="button" data-b="話の内容">話の内容</button>
-        <button type="button" data-b="感情表現">感情表現</button>
-        <button type="button" data-b="その他">その他</button>
+        <label class="survey-label">何を見て判断しましたか？</label>
+        <div class="basis-row" id="basisRow">
+          <button type="button" data-b="言葉遣い">言葉遣い</button>
+          <button type="button" data-b="反応速度">反応速度</button>
+          <button type="button" data-b="話の内容">話の内容</button>
+          <button type="button" data-b="感情表現">感情表現</button>
+          <button type="button" data-b="その他">その他</button>
+        </div>
       </div>
 
       <label class="survey-label">自由記述（任意）</label>
@@ -303,6 +278,7 @@
     </div><!-- /gameArea -->
   </div>
 
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
   <script>
     const chat = document.getElementById('chat');
     const turnInfo = document.getElementById('turnInfo');
@@ -312,8 +288,37 @@
     const restartBtn = document.getElementById('restartBtn');
     const askBtn = document.getElementById('askBtn');
     const questionInput = document.getElementById('questionInput');
+    const waitNote = document.getElementById('waitNote');
 
     let maxTurns = 5;
+
+    // ===== ゲーム状態 =====
+    // mode: 'single' (HTTP・相手はAI) / 'online' (Socket.IO・相手は人間 or AI補填)
+    // role: 'asker' (質問者=判定者) / 'answerer' (回答者。オンラインのみ)
+    let mode = 'single';
+    let role = 'asker';
+    let onlineGameId = null;
+    let socket = null;
+
+    // ===== プロトタイプ用の直接割当 (決定D9) =====
+    // URLに ?force=ai / ?force=human を付けると、本番のαドローを使わず
+    // 条件を直接指定できる (実験者用。games.assignment_mode='forced' で記録される)。
+    const urlForce = new URLSearchParams(location.search).get('force');
+
+    // ===== タイピング計測 (決定メモ§4) =====
+    // compose_time_ms = 「入力欄に触れてから送信するまで」の実時間。
+    // IME変換時間も含む実時間を測る(判別手がかりとして効くのは実時間のため)。
+    let composeStartAt = null;
+    function markComposeStart() {
+      if (composeStartAt === null) composeStartAt = Date.now();
+    }
+    questionInput.addEventListener('focus', markComposeStart);
+    questionInput.addEventListener('input', markComposeStart);
+    function takeComposeTime() {
+      const t = composeStartAt === null ? null : (Date.now() - composeStartAt);
+      composeStartAt = null;
+      return t;
+    }
 
     function addMsg(text, who, label) {
       const div = document.createElement('div');
@@ -329,13 +334,13 @@
       return d.innerHTML;
     }
 
-    async function startGame() {
+    function resetGameUi() {
       chat.innerHTML = '';
       resultBox.className = 'result hidden';
       restartBtn.classList.add('hidden');
       judgeBox.classList.add('hidden');
       inputRow.classList.remove('hidden');
-      // アンケートの状態をリセット
+      waitNote.classList.add('hidden');
       document.getElementById('survey').classList.add('hidden');
       document.getElementById('freeText').value = '';
       selConfidence = null;
@@ -345,46 +350,75 @@
       questionInput.value = '';
       questionInput.disabled = false;
       askBtn.disabled = false;
+      composeStartAt = null;
+    }
 
-      const res = await fetch('/start', { method: 'POST' });
+    function updateTurnInfo(turn) {
+      turnInfo.textContent = (role === 'asker' ? '質問 ' : '回答 ')
+        + turn + ' / ' + maxTurns;
+    }
+
+    // =====================================================================
+    //  シングル (HTTP)
+    // =====================================================================
+    async function startGame() {
+      resetGameUi();
+      role = 'asker';
+      questionInput.placeholder = '相手に質問する…';
+      const body = urlForce === 'ai' ? { force: 'ai' } : {};
+      const res = await fetch('/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
       const data = await res.json();
       maxTurns = data.max_turns;
       updateTurnInfo(0);
       questionInput.focus();
     }
 
-    function updateTurnInfo(turn) {
-      turnInfo.textContent = '質問 ' + turn + ' / ' + maxTurns;
-    }
-
-    async function ask() {
+    async function askSingle() {
       const q = questionInput.value.trim();
       if (!q) return;
+      const composeMs = takeComposeTime();
       askBtn.disabled = true;
       questionInput.disabled = true;
       addMsg(q, 'you', 'あなた');
       questionInput.value = '';
+      waitNote.classList.remove('hidden');
+      const tSend = Date.now();
 
       try {
         const res = await fetch('/ask', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ question: q })
+          body: JSON.stringify({ question: q, compose_time_ms: composeMs })
         });
         const data = await res.json();
         if (data.error) {
+          waitNote.classList.add('hidden');
           addMsg('(' + data.error + ')', 'them', 'システム');
         } else {
-          addMsg(data.reply, 'them', '相手');
-          updateTurnInfo(data.turn);
-          if (data.can_judge) {
-            // 質問上限 → 判定フェーズへ
-            inputRow.classList.add('hidden');
-            judgeBox.classList.remove('hidden');
-            return;
-          }
+          // b1: サーバが引いた遅延 delay_ms が「質問送信から」経過するまで表示しない。
+          // (通信+生成にかかった時間は remaining から差し引く)
+          const remaining = Math.max(0, data.delay_ms - (Date.now() - tSend));
+          setTimeout(() => {
+            waitNote.classList.add('hidden');
+            addMsg(data.reply, 'them', '相手');
+            updateTurnInfo(data.turn);
+            if (data.can_judge) {
+              inputRow.classList.add('hidden');
+              judgeBox.classList.remove('hidden');
+              return;
+            }
+            askBtn.disabled = false;
+            questionInput.disabled = false;
+            questionInput.focus();
+          }, remaining);
+          return;
         }
       } catch (e) {
+        waitNote.classList.add('hidden');
         addMsg('(通信エラー)', 'them', 'システム');
       }
       askBtn.disabled = false;
@@ -392,22 +426,164 @@
       questionInput.focus();
     }
 
-    async function judge(guess) {
+    async function judgeSingle(guess) {
       const res = await fetch('/judge', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ guess: guess })
       });
       const data = await res.json();
-      judgeBox.classList.add('hidden');
+      showResult(data, guess);
+    }
 
+    //  オンライン (Socket.IO)
+    function ensureSocket() {
+      if (socket) return socket;
+      socket = io();
+
+      socket.on('waiting', d => setPrepText(d.msg));
+      socket.on('waiting_status', d => setPrepText(d.msg));
+
+      socket.on('match_found', d => {
+        role = d.role;
+        maxTurns = d.max_turns;
+        onlineGameId = null;
+        resetGameUi();
+        if (role === 'asker') {
+          questionInput.placeholder = '相手に質問する…';
+          document.getElementById('headerHint').textContent =
+            'あなたは質問者。相手に質問して、人間かAIかを当てよう。';
+        } else {
+          questionInput.placeholder = '質問に答える…';
+          document.getElementById('headerHint').textContent =
+            'あなたは回答者。質問に答えよう。相手はあなたが人間かAIかを当てようとしている。';
+          // 回答者は最初の質問が来るまで入力できない
+          askBtn.disabled = true;
+          questionInput.disabled = true;
+        }
+        updateTurnInfo(0);
+        showScreen('gameArea');
+        if (role === 'asker') questionInput.focus();
+      });
+
+      // (回答者) 質問を受信
+      socket.on('question', d => {
+        addMsg(d.text, 'them', '相手');
+        askBtn.disabled = false;
+        questionInput.disabled = false;
+        composeStartAt = null;  // 計測は質問を見てからの実時間
+        questionInput.focus();
+      });
+
+      // (質問者) 回答を受信
+      socket.on('answer', d => {
+        waitNote.classList.add('hidden');
+        addMsg(d.text, 'them', '相手');
+        updateTurnInfo(d.turn);
+        if (d.can_judge) {
+          inputRow.classList.add('hidden');
+          judgeBox.classList.remove('hidden');
+        } else {
+          askBtn.disabled = false;
+          questionInput.disabled = false;
+          questionInput.focus();
+        }
+      });
+
+      // (回答者) ターン更新
+      socket.on('turn_update', d => {
+        updateTurnInfo(d.turn);
+        // 次の質問が来るまで入力は閉じる
+        askBtn.disabled = true;
+        questionInput.disabled = true;
+      });
+
+      socket.on('result', d => {
+        onlineGameId = d.game_id;
+        showResult(d, d.your_guess, d.you_are);
+      });
+
+      socket.on('opponent_left', () => {
+        addMsg('(相手が退出しました)', 'them', 'システム');
+        inputRow.classList.add('hidden');
+        judgeBox.classList.add('hidden');
+        restartBtn.classList.remove('hidden');
+      });
+
+      return socket;
+    }
+
+    function setPrepText(msg) {
+      document.getElementById('prepText').textContent = msg;
+    }
+
+    function startQuickMatch() {
+      showScreen('prepScreen');
+      setPrepText('対戦相手を探しています…');
+      const s = ensureSocket();
+      const payload = {};
+      if (urlForce === 'ai' || urlForce === 'human') payload.force = urlForce;
+      s.emit('join_quick', payload);
+    }
+
+    function cancelMatching() {
+      if (socket) { socket.disconnect(); socket = null; }
+      showScreen('modeScreen');
+    }
+
+    function sendOnline() {
+      const text = questionInput.value.trim();
+      if (!text) return;
+      const composeMs = takeComposeTime();
+      askBtn.disabled = true;
+      questionInput.disabled = true;
+      addMsg(text, 'you', 'あなた');
+      questionInput.value = '';
+      if (role === 'asker') {
+        waitNote.classList.remove('hidden');
+        socket.emit('submit_question', { text: text, compose_time_ms: composeMs });
+      } else {
+        socket.emit('submit_answer', { text: text, compose_time_ms: composeMs });
+      }
+    }
+
+    function judgeOnline(guess) {
+      socket.emit('submit_judge', { guess: guess });
+      judgeBox.classList.add('hidden');
+    }
+
+
+    //  共通: 送信 / 判定 / 結果 / アンケート
+    function send() {
+      if (mode === 'online') sendOnline();
+      else askSingle();
+    }
+
+    function judge(guess) {
+      judgeBox.classList.add('hidden');
+      if (mode === 'online') judgeOnline(guess);
+      else judgeSingle(guess);
+    }
+
+    function showResult(data, guess, youAre) {
       const answerLabel = data.answer === 'ai' ? 'AI' : '人間';
-      const guessLabel = guess === 'ai' ? 'AI' : '人間';
-      resultBox.className = 'result ' + (data.correct ? 'correct' : 'wrong');
-      resultBox.innerHTML = (data.correct ? '✅ 正解！' : '❌ 不正解…') +
-        '<br>あなたの判定: ' + guessLabel +
-        '<br>相手の正体: ' + answerLabel;
-      // アンケートを表示(任意)
+      if (youAre === 'answerer') {
+        // 回答者側: 自分は判定していないので中立表示
+        resultBox.className = 'result neutral';
+        resultBox.innerHTML = 'ゲーム終了<br>相手の判定: '
+          + (data.your_guess === 'ai' ? 'AI' : '人間')
+          + '<br>(あなたは ' + (data.correct ? '見破られました' : '人間かAIか惑わせました') + ')';
+        document.getElementById('surveyConfidenceBlock').classList.add('hidden');
+      } else {
+        const guessLabel = guess === 'ai' ? 'AI' : '人間';
+        resultBox.className = 'result ' + (data.correct ? 'correct' : 'wrong');
+        resultBox.innerHTML = (data.correct ? '✅ 正解！' : '❌ 不正解…') +
+          '<br>あなたの判定: ' + guessLabel +
+          '<br>相手の正体: ' + answerLabel;
+        document.getElementById('surveyConfidenceBlock').classList.remove('hidden');
+      }
+      inputRow.classList.add('hidden');
+      waitNote.classList.add('hidden');
       document.getElementById('survey').classList.remove('hidden');
     }
 
@@ -435,6 +611,10 @@
         basis: [...selBasis].join(','),
         free_text: document.getElementById('freeText').value.trim(),
       };
+      if (mode === 'online') {
+        payload.game_id = onlineGameId;
+        payload.respondent_id = role === 'asker' ? 'p_asker' : 'p_answerer';
+      }
       try {
         await fetch('/survey', {
           method: 'POST',
@@ -446,7 +626,6 @@
     }
 
     function skipSurvey() {
-      // 何も送らずに閉じる
       finishSurvey();
     }
 
@@ -455,26 +634,23 @@
       restartBtn.classList.remove('hidden');
     }
 
-    askBtn.addEventListener('click', ask);
+    askBtn.addEventListener('click', send);
     let isComposing = false;
     questionInput.addEventListener('compositionstart', () => { isComposing = true; });
     questionInput.addEventListener('compositionend', () => { isComposing = false; });
     questionInput.addEventListener('keydown', e => {
       if (e.key === 'Enter') {
         if (isComposing || e.isComposing) return;  // 変換確定のEnterは送信しない
-        ask();
+        send();
       }
     });
 
     // ===== 画面遷移 =====
-    // 集める設定。将来オンライン化したとき、そのまま「部屋の設定」としてサーバへ送れる形にしておく。
     const config = {
       entry: null,          // 'single' | 'group'
       visibility: null,     // 'public' | 'private'
       roomKey: '',
       maxPlayers: 4,
-      aiCount: 1,
-      humanAsAiCount: 0,
     };
 
     function showScreen(id) {
@@ -483,7 +659,6 @@
     }
 
     function quitGame() {
-      // ブラウザではタブを確実には閉じられないため、終了画面を出す
       document.body.innerHTML =
         '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;' +
         'color:var(--muted);font-family:inherit">プレイありがとうございました。タブを閉じて終了できます。</div>';
@@ -497,26 +672,25 @@
 
     // --- シングル ---
     function startSinglePrep() {
+      mode = 'single';
       showScreen('prepScreen');
-      const prepText = document.getElementById('prepText');
-      prepText.textContent = '対戦相手を準備しています…';
-      // 注: 対人オンラインマッチはまだ土台が無いので、今は必ずAIと対戦する。
-      // ここが将来「オンラインで人間を待つ／いなければAIで補填」の分岐点になる。
-      setTimeout(() => { prepText.textContent = '相手が見つかりました'; }, 900);
+      setPrepText('対戦相手を準備しています…');
+      // 表示は経過時間ベースの演出のみ (正体と無関係)
+      setTimeout(() => setPrepText('相手が見つかりました'), 900);
       setTimeout(() => {
         showScreen('gameArea');
         startGame();
       }, 1500);
     }
 
-    // --- グループ: ルーム作成 ---
+    // --- オンライン ---
     function chooseVisibility(v) {
       config.visibility = v;
       if (v === 'private') {
-        showScreen('privateScreen');
+        showScreen('privateScreen');  // 未実装 (次フェーズ)
       } else {
-        config.roomKey = '';
-        goToGameSettings();
+        mode = 'online';
+        startQuickMatch();
       }
     }
 
@@ -527,53 +701,11 @@
       e.target.classList.add('sel');
     });
 
-    function goToGameSettings() {
-      if (config.visibility === 'private') {
-        config.roomKey = document.getElementById('roomKeyInput').value.trim();
-        if (!config.roomKey) { alert('合言葉を入力してください'); return; }
-      }
-      renderRoomSummary();
-      showScreen('gameSettingsScreen');
-    }
-
-    function renderRoomSummary() {
-      const s = document.getElementById('roomSummary');
-      if (config.visibility === 'public') {
-        s.textContent = '公開ルーム';
-      } else {
-        s.textContent = 'プライベートルーム / 合言葉: ' + config.roomKey +
-          ' / 上限: ' + config.maxPlayers + '人';
-      }
-    }
-
-    document.getElementById('aiCountRow').addEventListener('click', e => {
-      if (e.target.tagName !== 'BUTTON') return;
-      config.aiCount = parseInt(e.target.dataset.n);
-      [...e.currentTarget.children].forEach(b => b.classList.remove('sel'));
-      e.target.classList.add('sel');
-    });
-
-    document.getElementById('humanAsAiRow').addEventListener('click', e => {
-      if (e.target.tagName !== 'BUTTON') return;
-      config.humanAsAiCount = parseInt(e.target.dataset.n);
-      [...e.currentTarget.children].forEach(b => b.classList.remove('sel'));
-      e.target.classList.add('sel');
-    });
-
-    function backFromGameSettings() {
-      showScreen(config.visibility === 'private' ? 'privateScreen' : 'roomCreateScreen');
-    }
-
-    function startGroupGame() {
-      // グループ(オンライン)はまだ土台が無いので、設定だけ保持して準備中を知らせる。
-      // config には entry/visibility/roomKey/maxPlayers/aiCount/humanAsAiCount が入っている。
-      document.getElementById('groupPrepNote').textContent =
-        '※ グループ対戦はまだ遊べません。オンライン通信ができたら、この設定でルームを立てられます。';
-    }
-
-    // --- ゲーム後 ---
+    // ゲーム後 
     function backToSelect() {
-      // 「もう一度遊ぶ」でタイトルに戻る
+      if (socket) { socket.disconnect(); socket = null; }
+      document.getElementById('headerHint').textContent =
+        '相手はAIのことも、人間のこともあります。';
       showScreen('titleScreen');
     }
 

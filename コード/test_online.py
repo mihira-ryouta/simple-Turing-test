@@ -1,133 +1,206 @@
+# -*- coding: utf-8 -*-
 """
-オンライン(クイックマッチ)の自己テスト。
-相手も、ブラウザも不要。app.py に対して仮想の2クライアントを内部で走らせ、
-マッチング〜質問〜回答〜判定〜切断通知までを自動で確認する。
+test_online.py ― アップグレード版の自動テスト。
 
-実行:
-    python test_online.py
+検証すること:
+  1. スキーマ: 計測列が games/messages に存在する
+  2. 人対人: force=human 2人がマッチし、質問→回答→判定→保存
+     (compose_time_ms / char_count / ground_truth='human' が記録される)
+  3. 強制AI戦: force=ai で即マッチ、ダミーAIが返答し、判定→保存
+     (displayed_delay_ms / assignment_mode='forced' が記録される)
+  4. W切替: αドローで人間を引いた待機者が、W到達でAI戦へ切替
+     (backfilled=1 が記録される)
 
-注:
-  - 実DB(database.py)とAI(ai_backend.py)には触れないよう、テスト内でダミーに
-    差し替えている。研究用のSQLiteは汚さない。Geminiのキーも不要。
-  - 「通信路そのもの」の確認(ブラウザで接続が張れるか)は、このテストとは別に、
-    2タブで /公開 を押す方法で確認できる。
+注意:
+  - SocketIOTestClient はサーバーロジックのみ保証する。ネットワーク伝送と
+    ブラウザJSは保証しないので、実機確認(2タブ)は別途必須。
+  - GAME_FAST_DELAY=1 で遅延をほぼゼロにしてテストする。
+    研究データ収集時にこの環境変数を設定してはならない。
+
+実行: python test_online.py
 """
 
-import sys
-import types
+import os
+import time
 
-# --- app.py を読み込む前に、依存モジュールをダミーへ差し替える ---------------
-# app.py は import 時に database.init_db() を呼ぶため、先に仕込む必要がある。
+# アプリを import する前に環境を整える
+os.environ["GAME_FAST_DELAY"] = "1"          # 遅延ほぼゼロ (テスト専用)
+os.environ["GAME_DB_PATH"] = "test_game.db"  # 本物のDBを汚さない
+if os.path.exists("test_game.db"):
+    os.remove("test_game.db")
 
-_fake_db = types.ModuleType("database")
-_fake_db.CALLS = {"games": [], "players": [], "messages": []}
-_fake_db._mid = [0]
-_fake_db.init_db = lambda: None
-_fake_db.save_game = lambda **kw: _fake_db.CALLS["games"].append(kw)
+import app as app_module  # noqa: E402
+import database as db     # noqa: E402
 
+app = app_module.app
+socketio = app_module.socketio
 
-def _save_player(game_id, key, role=None, vote_target=None, correct=None):
-    _fake_db.CALLS["players"].append(
-        dict(game_id=game_id, key=key, role=role,
-             vote_target=vote_target, correct=correct))
-
-
-def _save_message(game_id, turn, speaker_id, kind, content, reply_to=None):
-    _fake_db._mid[0] += 1
-    _fake_db.CALLS["messages"].append(
-        dict(id=_fake_db._mid[0], turn=turn, speaker_id=speaker_id,
-             kind=kind, content=content, reply_to=reply_to))
-    return _fake_db._mid[0]
+PASS, FAIL = 0, 0
 
 
-_fake_db.save_player = _save_player
-_fake_db.save_message = _save_message
-_fake_db.save_survey = lambda **kw: None
-_fake_db.save_annotation = lambda **kw: None
-
-_fake_ai = types.ModuleType("ai_backend")
-_fake_ai.generate_reply = lambda history: "(dummy)"
-
-sys.modules["database"] = _fake_db
-sys.modules["ai_backend"] = _fake_ai
-
-# ここで初めて app を読み込む(上のダミーが使われる)
-from app import app, socketio  # noqa: E402
-
-db = _fake_db
+def check(name, cond):
+    global PASS, FAIL
+    if cond:
+        PASS += 1
+        print(f"  [OK] {name}")
+    else:
+        FAIL += 1
+        print(f"  [NG] {name}")
 
 
-def _names(recv):
-    return [r["name"] for r in recv]
+def drain(client):
+    """受信イベントを {イベント名: [args, ...]} に整形して返す。"""
+    out = {}
+    for pkt in client.get_received():
+        out.setdefault(pkt["name"], []).append(
+            pkt["args"][0] if pkt["args"] else {})
+    return out
 
 
-def run():
-    c1 = socketio.test_client(app)
-    c2 = socketio.test_client(app)
-    assert c1.is_connected() and c2.is_connected(), "接続に失敗"
-    print("[1] 2クライアントが接続できた")
-
-    # 1人目 → 待機
-    c1.emit("join_quick")
-    r1 = c1.get_received()
-    assert _names(r1) == ["waiting"], _names(r1)
-    print("[2] 1人目は待機(waiting)になった")
-
-    # 2人目 → マッチ成立、両者に役割が届く
-    c2.emit("join_quick")
-    r1 = c1.get_received()
-    r2 = c2.get_received()
-    assert "match_found" in _names(r1) and "match_found" in _names(r2)
-    role1 = [r for r in r1 if r["name"] == "match_found"][0]["args"][0]["role"]
-    role2 = [r for r in r2 if r["name"] == "match_found"][0]["args"][0]["role"]
-    assert {role1, role2} == {"asker", "answerer"}, (role1, role2)
-    print(f"[3] マッチ成立。役割割当 OK (c1={role1}, c2={role2})")
-
-    asker, answerer = (c1, c2) if role1 == "asker" else (c2, c1)
-
-    # 5往復の質問/回答が中継されるか
-    for i in range(5):
-        asker.emit("submit_question", {"text": f"Q{i+1}"})
-        rq = answerer.get_received()
-        assert "question" in _names(rq), (i, _names(rq))
-        assert rq[-1]["args"][0]["text"] == f"Q{i+1}"
-
-        answerer.emit("submit_answer", {"text": f"A{i+1}"})
-        ra = asker.get_received()
-        ans = [r for r in ra if r["name"] == "answer"][0]["args"][0]
-        assert ans["text"] == f"A{i+1}" and ans["turn"] == i + 1
-        assert ans["can_judge"] == (i + 1 >= 5)
-    print("[4] 質問→回答の中継が5往復とも OK")
-
-    # 判定 → 両者に結果
-    asker.emit("submit_judge", {"guess": "human"})
-    res_a = [r for r in asker.get_received() if r["name"] == "result"][0]["args"][0]
-    res_b = [r for r in answerer.get_received() if r["name"] == "result"][0]["args"][0]
-    assert res_a["correct"] is True and res_a["answer"] == "human"
-    assert res_b["you_are"] == "answerer"
-    print("[5] 判定と結果配信 OK (相手=人間、判定=正解)")
-
-    # DB保存の中身
-    g = db.CALLS["games"][-1]
-    assert g["entry_type"] == "quick" and g["player_count"] == 2
-    assert g["ai_present"] is False and g["ai_count"] == 0
-    msgs = db.CALLS["messages"]
-    assert sum(1 for m in msgs if m["kind"] == "question") == 5
-    assert sum(1 for m in msgs if m["kind"] == "answer") == 5
-    print("[6] DB保存の内容 OK (quick / 人間2人 / 質問5・回答5)")
-
-    # 切断で相手に通知
-    a2 = socketio.test_client(app)
-    b2 = socketio.test_client(app)
-    a2.emit("join_quick"); a2.get_received()
-    b2.emit("join_quick"); a2.get_received(); b2.get_received()
-    a2.disconnect()
-    rb = b2.get_received()
-    assert "opponent_left" in _names(rb), _names(rb)
-    print("[7] 相手の切断通知(opponent_left) OK")
-
-    print("\n=== オンライン経路: 全項目パス。通信ロジックは正常に動いています ===")
+def wait_for(client, event, timeout=5.0):
+    """指定イベントが届くまでポーリングする (バックグラウンドタスク対策)。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        got = drain(client)
+        if event in got:
+            return got[event][-1]
+        time.sleep(0.1)
+    return None
 
 
-if __name__ == "__main__":
-    run()
+def db_row(sql, args=()):
+    with db._conn() as conn:
+        return conn.execute(sql, args).fetchone()
+
+
+def db_rows(sql, args=()):
+    with db._conn() as conn:
+        return conn.execute(sql, args).fetchall()
+
+
+# ============================================================
+print("1. スキーマ検証")
+with db._conn() as conn:
+    game_cols = {r[1] for r in conn.execute("PRAGMA table_info(games)")}
+    msg_cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)")}
+for col in ("ground_truth_identity", "backfilled", "queue_wait_ms",
+            "ai_switch_deadline_ms", "prompt_version",
+            "delay_model_version", "assignment_mode", "debriefed"):
+    check(f"games.{col}", col in game_cols)
+for col in ("char_count", "compose_time_ms", "displayed_delay_ms"):
+    check(f"messages.{col}", col in msg_cols)
+
+
+print("2. 人対人 (force=human ×2)")
+c1 = socketio.test_client(app)
+c2 = socketio.test_client(app)
+c1.emit("join_quick", {"force": "human"})
+time.sleep(0.2)
+c2.emit("join_quick", {"force": "human"})
+time.sleep(0.3)
+
+m1 = wait_for(c1, "match_found", 2)
+m2 = wait_for(c2, "match_found", 2)
+check("両者に match_found", m1 is not None and m2 is not None)
+roles = {m1["role"], m2["role"]}
+check("役割は asker と answerer", roles == {"asker", "answerer"})
+
+asker, answerer = (c1, c2) if m1["role"] == "asker" else (c2, c1)
+for turn in range(app_module.MAX_TURNS):
+    asker.emit("submit_question",
+               {"text": f"質問{turn+1}です", "compose_time_ms": 4000 + turn})
+    q = wait_for(answerer, "question", 2)
+    check(f"回答者が質問{turn+1}を受信", q is not None)
+    answerer.emit("submit_answer",
+                  {"text": f"回答{turn+1}だよ", "compose_time_ms": 6000 + turn})
+    a = wait_for(asker, "answer", 2)
+    check(f"質問者が回答{turn+1}を受信", a is not None)
+check("最終ターンで can_judge", a and a.get("can_judge") is True)
+
+asker.emit("submit_judge", {"guess": "human"})
+r1 = wait_for(asker, "result", 2)
+r2 = wait_for(answerer, "result", 2)
+check("両者に result", r1 is not None and r2 is not None)
+check("人間判定は正解", r1 and r1["correct"] is True)
+
+g = db_row("SELECT * FROM games WHERE game_id=?", (r1["game_id"],))
+check("ground_truth_identity='human'", g["ground_truth_identity"] == "human")
+check("assignment_mode='forced'", g["assignment_mode"] == "forced")
+check("backfilled=0", g["backfilled"] == 0)
+msgs = db_rows("SELECT * FROM messages WHERE game_id=? ORDER BY id",
+               (r1["game_id"],))
+check("メッセージ10件保存", len(msgs) == app_module.MAX_TURNS * 2)
+check("質問に compose_time_ms",
+      all(m["compose_time_ms"] is not None for m in msgs
+          if m["kind"] == "question"))
+check("回答に compose_time_ms (人間)",
+      all(m["compose_time_ms"] is not None for m in msgs
+          if m["kind"] == "answer"))
+check("全発言に char_count",
+      all(m["char_count"] == len(m["content"]) for m in msgs))
+c1.disconnect()
+c2.disconnect()
+
+# ============================================================
+print("3. 強制AI戦 (force=ai)")
+c3 = socketio.test_client(app)
+c3.emit("join_quick", {"force": "ai"})
+m3 = wait_for(c3, "match_found", 2)
+check("即 match_found", m3 is not None)
+check("人間は質問者固定 (b2)", m3 and m3["role"] == "asker")
+
+for turn in range(app_module.MAX_TURNS):
+    c3.emit("submit_question",
+            {"text": f"AIへの質問{turn+1}", "compose_time_ms": 5000})
+    a = wait_for(c3, "answer", 5)
+    check(f"AI回答{turn+1}を受信", a is not None)
+
+c3.emit("submit_judge", {"guess": "ai"})
+r3 = wait_for(c3, "result", 2)
+check("result 受信・AI判定は正解", r3 is not None and r3["correct"] is True)
+
+g3 = db_row("SELECT * FROM games WHERE game_id=?", (r3["game_id"],))
+check("ground_truth_identity='ai'", g3["ground_truth_identity"] == "ai")
+check("assignment_mode='forced'", g3["assignment_mode"] == "forced")
+check("prompt_version 記録", g3["prompt_version"] is not None)
+check("delay_model_version 記録", g3["delay_model_version"] is not None)
+ai_msgs = db_rows(
+    "SELECT * FROM messages WHERE game_id=? AND kind='answer'",
+    (r3["game_id"],))
+check("AI回答に displayed_delay_ms",
+      all(m["displayed_delay_ms"] is not None for m in ai_msgs))
+check("AI回答に compose_time_ms なし",
+      all(m["compose_time_ms"] is None for m in ai_msgs))
+c3.disconnect()
+
+
+print("4. W切替 (αドロー・人間ドロー→タイムアウト→AI補填)")
+app_module.ALPHA_AI = 0.0  # 必ず「人間」を引かせる (GAME_FAST_DELAYでW=0.5秒)
+c4 = socketio.test_client(app)
+c4.emit("join_quick", {})
+m4 = wait_for(c4, "match_found", 5)  # 相手がいないのでW到達でAI戦へ
+check("W到達でAI戦へ切替", m4 is not None and m4["role"] == "asker")
+
+c4.emit("submit_question", {"text": "こんにちは", "compose_time_ms": 3000})
+a4 = wait_for(c4, "answer", 5)
+check("補填AIが応答", a4 is not None)
+for turn in range(app_module.MAX_TURNS - 1):
+    c4.emit("submit_question", {"text": f"追加質問{turn}", "compose_time_ms": 3000})
+    wait_for(c4, "answer", 5)
+c4.emit("submit_judge", {"guess": "human"})
+r4 = wait_for(c4, "result", 2)
+check("result 受信", r4 is not None)
+
+g4 = db_row("SELECT * FROM games WHERE game_id=?", (r4["game_id"],))
+check("backfilled=1 (沈黙補填の禁止)", g4["backfilled"] == 1)
+check("assignment_mode='random'", g4["assignment_mode"] == "random")
+check("ai_switch_deadline_ms 記録", g4["ai_switch_deadline_ms"] is not None)
+check("queue_wait_ms 記録", g4["queue_wait_ms"] is not None)
+c4.disconnect()
+
+# ============================================================
+print()
+print(f"結果: {PASS} passed / {FAIL} failed")
+if os.path.exists("test_game.db"):
+    os.remove("test_game.db")
+exit(0 if FAIL == 0 else 1)
