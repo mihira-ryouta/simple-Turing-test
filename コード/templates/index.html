@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>人工知能判別ゲーム</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --panel: #1a1d28;
+      --accent: #6c8cff;
+      --you: #2a3550;
+      --them: #2d2a3a;
+      --text: #e6e8ef;
+      --muted: #8b90a3;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 0;
+      font-family: -apple-system, "Hiragino Sans", "Yu Gothic", sans-serif;
+      background: var(--bg); color: var(--text);
+      display: flex; justify-content: center;
+    }
+    .app { width: 100%; max-width: 600px; min-height: 100vh; padding: 16px;
+      display: flex; flex-direction: column; }
+    header { text-align: center; padding: 12px 0; }
+    header h1 { font-size: 18px; margin: 0; }
+    header p { font-size: 13px; color: var(--muted); margin: 6px 0 0; }
+    .turn-info { font-size: 12px; color: var(--muted); text-align: center; margin: 8px 0; }
+    .chat {
+      flex: 1; background: var(--panel); border-radius: 12px;
+      padding: 12px; overflow-y: auto; min-height: 300px;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .msg { max-width: 80%; padding: 8px 12px; border-radius: 12px; font-size: 14px; line-height: 1.5; }
+    .msg.you { align-self: flex-end; background: var(--you); }
+    .msg.them { align-self: flex-start; background: var(--them); }
+    .msg .label { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+    .input-row { display: flex; gap: 8px; margin-top: 12px; }
+    input[type=text] {
+      flex: 1; padding: 12px; border-radius: 10px; border: 1px solid #333;
+      background: #11141d; color: var(--text); font-size: 14px;
+    }
+    button {
+      padding: 12px 16px; border: none; border-radius: 10px;
+      background: var(--accent); color: white; font-size: 14px; cursor: pointer;
+    }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .judge-box { margin-top: 12px; text-align: center; }
+    .judge-box .q { font-size: 14px; margin-bottom: 10px; }
+    .judge-buttons { display: flex; gap: 10px; justify-content: center; }
+    .judge-buttons button { flex: 1; max-width: 180px; }
+    .result { margin-top: 16px; padding: 16px; border-radius: 12px;
+      background: var(--panel); text-align: center; font-size: 15px; }
+    .result.correct { border: 2px solid #4caf50; }
+    .result.wrong { border: 2px solid #e05656; }
+    .hidden { display: none; }
+    .restart { margin-top: 12px; background: #444; }
+
+    /* 選択画面 */
+    .select-screen { display: flex; flex-direction: column; gap: 24px; padding: 24px 0; }
+    .select-block { display: flex; flex-direction: column; gap: 12px; }
+    .select-label { font-size: 14px; color: var(--muted); }
+    .mode-buttons { display: flex; gap: 12px; }
+    .mode-btn {
+      flex: 1; display: flex; flex-direction: column; gap: 4px; align-items: center;
+      background: var(--panel); border: 2px solid #2a2e3c; color: var(--text);
+      padding: 20px 12px; border-radius: 12px; font-size: 15px; cursor: pointer;
+    }
+    .mode-btn.sel { border-color: var(--accent); background: #1d2235; }
+    .mode-sub { font-size: 11px; color: var(--muted); font-weight: normal; }
+    .role-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+    .role-btn {
+      flex: 1; min-width: 60px; background: #11141d; border: 1px solid #333;
+      color: var(--text); padding: 12px; border-radius: 8px; font-size: 14px; cursor: pointer;
+    }
+    .role-btn.sel { background: var(--accent); border-color: var(--accent); }
+    .prep-note { font-size: 13px; color: #e0a85a; min-height: 18px; }
+    .start-btn {
+      background: var(--accent); padding: 16px; border-radius: 12px;
+      font-size: 16px; font-weight: 500;
+    }
+
+    .survey { margin-top: 16px; padding: 16px; border-radius: 12px; background: var(--panel); }
+    .survey-title { font-size: 14px; font-weight: 500; margin-bottom: 12px; }
+    .survey-label { display: block; font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
+    .confidence-row, .basis-row { display: flex; gap: 6px; flex-wrap: wrap; }
+    .confidence-row button, .basis-row button {
+      background: #11141d; border: 1px solid #333; color: var(--text);
+      padding: 8px 12px; border-radius: 8px; font-size: 13px; cursor: pointer;
+    }
+    .confidence-row button.sel, .basis-row button.sel {
+      background: var(--accent); border-color: var(--accent);
+    }
+    .confidence-hint { font-size: 11px; color: var(--muted); margin-top: 6px; }
+    textarea {
+      width: 100%; margin-top: 4px; padding: 10px; border-radius: 8px;
+      border: 1px solid #333; background: #11141d; color: var(--text);
+      font-size: 13px; font-family: inherit; resize: vertical;
+    }
+    .survey-actions { display: flex; gap: 10px; margin-top: 16px; }
+    .survey-actions button { flex: 1; }
+    .skip-btn { background: #444; }
+    .submit-btn { background: var(--accent); }
+
+    /* 画面切り替え */
+    .screen { flex: 1; display: flex; flex-direction: column; }
+    .screen.hidden { display: none; }
+    .menu-screen { justify-content: center; gap: 20px; padding: 24px 0; }
+    .menu-hero { text-align: center; margin-bottom: 8px; }
+    .menu-title { font-size: 22px; font-weight: 600; }
+    .menu-sub { font-size: 13px; color: var(--muted); margin-top: 6px; }
+    .menu-actions { display: flex; flex-direction: column; gap: 12px; }
+    .menu-desc { font-size: 13px; color: var(--muted); line-height: 1.6; }
+    .ghost-btn { background: transparent; border: 1px solid #333; color: var(--muted); }
+
+    .field-label { font-size: 13px; color: var(--muted); margin: 6px 0; }
+    .text-field {
+      padding: 12px; border-radius: 10px; border: 1px solid #333;
+      background: #11141d; color: var(--text); font-size: 14px;
+    }
+    .num-row { display: flex; gap: 8px; flex-wrap: wrap; }
+    .num-btn {
+      flex: 1; min-width: 48px; background: #11141d; border: 1px solid #333;
+      color: var(--text); padding: 12px; border-radius: 8px; font-size: 14px; cursor: pointer;
+    }
+    .num-btn.sel { background: var(--accent); border-color: var(--accent); }
+    .room-summary { font-size: 12px; color: var(--muted); padding: 8px 0; }
+
+    .spinner {
+      width: 36px; height: 36px; margin: 0 auto 16px;
+      border: 3px solid #2a2e3c; border-top-color: var(--accent);
+      border-radius: 50%; animation: spin 0.9s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .prep-text { text-align: center; font-size: 14px; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>人工知能判別ゲーム</h1>
+      <p>あなたは質問者。相手に質問して、人間かAIかを当てよう。</p>
+    </header>
+
+    <!-- タイトル画面 -->
+    <div class="screen menu-screen" id="titleScreen">
+      <div class="menu-hero">
+        <div class="menu-title">人工知能判別ゲーム</div>
+        <div class="menu-sub">相手が人間かAIかを見抜こう</div>
+      </div>
+      <div class="menu-actions">
+        <button class="start-btn" onclick="showScreen('modeScreen')">ゲーム開始</button>
+        <button class="ghost-btn" onclick="quitGame()">終了</button>
+      </div>
+    </div>
+
+    <!-- モード選択 -->
+    <div class="screen menu-screen hidden" id="modeScreen">
+      <div class="select-label">対戦の種類を選んでください</div>
+      <div class="mode-buttons">
+        <button class="mode-btn" onclick="chooseEntry('single')">
+          シングル<span class="mode-sub">相手1体と1対1</span>
+        </button>
+        <button class="mode-btn" onclick="chooseEntry('group')">
+          グループ<span class="mode-sub">みんなで判別（準備中）</span>
+        </button>
+      </div>
+      <button class="ghost-btn" onclick="showScreen('titleScreen')">戻る</button>
+    </div>
+
+    <!-- シングル -->
+    <div class="screen menu-screen hidden" id="singleScreen">
+      <div class="select-label">シングル対戦</div>
+      <p class="menu-desc">あなたが質問者になり、相手に質問して人間かAIかを当てます。相手が人間かAIかはランダムです。</p>
+      <div class="menu-actions">
+        <button class="start-btn" onclick="startSinglePrep()">Start</button>
+        <button class="ghost-btn" onclick="showScreen('modeScreen')">戻る</button>
+      </div>
+    </div>
+
+    <!-- 準備中(マッチング/AI準備) -->
+    <div class="screen menu-screen hidden" id="prepScreen">
+      <div class="spinner"></div>
+      <div class="prep-text" id="prepText">対戦相手を準備しています…</div>
+    </div>
+
+    <!-- ルーム作成 (グループ) -->
+    <div class="screen menu-screen hidden" id="roomCreateScreen">
+      <div class="select-label">ルームを作成</div>
+      <div class="mode-buttons">
+        <button class="mode-btn" onclick="chooseVisibility('public')">
+          公開<span class="mode-sub">誰でも参加できる</span>
+        </button>
+        <button class="mode-btn" onclick="chooseVisibility('private')">
+          プライベート<span class="mode-sub">合言葉で限定</span>
+        </button>
+      </div>
+      <button class="ghost-btn" onclick="showScreen('modeScreen')">戻る</button>
+    </div>
+
+    <!-- プライベート設定: 鍵 + 人数上限 -->
+    <div class="screen menu-screen hidden" id="privateScreen">
+      <div class="select-label">プライベートルームの設定</div>
+      <label class="field-label">合言葉（ルームの鍵）</label>
+      <input type="text" id="roomKeyInput" class="text-field" placeholder="例: neko123" autocomplete="off">
+      <label class="field-label">参加人数の上限</label>
+      <div class="num-row" id="maxPlayersRow">
+        <button class="num-btn" data-n="2">2</button>
+        <button class="num-btn sel" data-n="4">4</button>
+        <button class="num-btn" data-n="6">6</button>
+        <button class="num-btn" data-n="8">8</button>
+        <button class="num-btn" data-n="10">10</button>
+      </div>
+      <div class="menu-actions">
+        <button class="start-btn" onclick="goToGameSettings()">次へ</button>
+        <button class="ghost-btn" onclick="showScreen('roomCreateScreen')">戻る</button>
+      </div>
+    </div>
+
+    <!-- ゲーム設定: AI数 + AI側につく人数 -->
+    <div class="screen menu-screen hidden" id="gameSettingsScreen">
+      <div class="select-label">ゲーム設定</div>
+      <div class="room-summary" id="roomSummary"></div>
+      <label class="field-label">AIの数</label>
+      <div class="num-row" id="aiCountRow">
+        <button class="num-btn" data-n="0">0</button>
+        <button class="num-btn sel" data-n="1">1</button>
+        <button class="num-btn" data-n="2">2</button>
+        <button class="num-btn" data-n="3">3</button>
+      </div>
+      <label class="field-label">AI側につく人（AIっぽい人間役）の人数</label>
+      <div class="num-row" id="humanAsAiRow">
+        <button class="num-btn sel" data-n="0">0</button>
+        <button class="num-btn" data-n="1">1</button>
+        <button class="num-btn" data-n="2">2</button>
+        <button class="num-btn" data-n="3">3</button>
+      </div>
+      <div class="prep-note" id="groupPrepNote"></div>
+      <div class="menu-actions">
+        <button class="start-btn" onclick="startGroupGame()">ゲーム開始</button>
+        <button class="ghost-btn" onclick="backFromGameSettings()">戻る</button>
+      </div>
+    </div>
+
+    <!-- ゲーム本体(準備完了後に表示) -->
+    <div id="gameArea" class="screen hidden">
+    <div class="turn-info" id="turnInfo"></div>
+
+    <div class="chat" id="chat"></div>
+
+    <!-- 質問入力 -->
+    <div class="input-row" id="inputRow">
+      <input type="text" id="questionInput" placeholder="相手に質問する…" autocomplete="off">
+      <button id="askBtn">質問</button>
+    </div>
+
+    <!-- 判定フェーズ -->
+    <div class="judge-box hidden" id="judgeBox">
+      <div class="q">相手は人間？ それともAI？</div>
+      <div class="judge-buttons">
+        <button onclick="judge('human')">人間だと思う</button>
+        <button onclick="judge('ai')">AIだと思う</button>
+      </div>
+    </div>
+
+    <!-- 結果 -->
+    <div class="result hidden" id="result"></div>
+
+    <!-- アンケート(任意) -->
+    <div class="survey hidden" id="survey">
+      <div class="survey-title">アンケート（任意・研究用）</div>
+
+      <label class="survey-label">判定にどれくらい自信がありましたか？</label>
+      <div class="confidence-row" id="confidenceRow">
+        <button type="button" data-v="1">1</button>
+        <button type="button" data-v="2">2</button>
+        <button type="button" data-v="3">3</button>
+        <button type="button" data-v="4">4</button>
+        <button type="button" data-v="5">5</button>
+      </div>
+      <div class="confidence-hint">1 = 全く自信なし　5 = 確信していた</div>
+
+      <label class="survey-label">何を見て判断しましたか？</label>
+      <div class="basis-row" id="basisRow">
+        <button type="button" data-b="言葉遣い">言葉遣い</button>
+        <button type="button" data-b="反応速度">反応速度</button>
+        <button type="button" data-b="話の内容">話の内容</button>
+        <button type="button" data-b="感情表現">感情表現</button>
+        <button type="button" data-b="その他">その他</button>
+      </div>
+
+      <label class="survey-label">自由記述（任意）</label>
+      <textarea id="freeText" rows="2" placeholder="気づいたこと、迷った点など"></textarea>
+
+      <div class="survey-actions">
+        <button class="skip-btn" onclick="skipSurvey()">スキップ</button>
+        <button class="submit-btn" onclick="submitSurvey()">送信</button>
+      </div>
+    </div>
+
+    <button class="restart hidden" id="restartBtn" onclick="backToSelect()">もう一度遊ぶ</button>
+    </div><!-- /gameArea -->
+  </div>
+
+  <script>
+    const chat = document.getElementById('chat');
+    const turnInfo = document.getElementById('turnInfo');
+    const inputRow = document.getElementById('inputRow');
+    const judgeBox = document.getElementById('judgeBox');
+    const resultBox = document.getElementById('result');
+    const restartBtn = document.getElementById('restartBtn');
+    const askBtn = document.getElementById('askBtn');
+    const questionInput = document.getElementById('questionInput');
+
+    let maxTurns = 5;
+
+    function addMsg(text, who, label) {
+      const div = document.createElement('div');
+      div.className = 'msg ' + who;
+      div.innerHTML = '<div class="label">' + label + '</div>' + escapeHtml(text);
+      chat.appendChild(div);
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    function escapeHtml(s) {
+      const d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    async function startGame() {
+      chat.innerHTML = '';
+      resultBox.className = 'result hidden';
+      restartBtn.classList.add('hidden');
+      judgeBox.classList.add('hidden');
+      inputRow.classList.remove('hidden');
+      // アンケートの状態をリセット
+      document.getElementById('survey').classList.add('hidden');
+      document.getElementById('freeText').value = '';
+      selConfidence = null;
+      selBasis.clear();
+      document.querySelectorAll('#confidenceRow button, #basisRow button')
+        .forEach(b => b.classList.remove('sel'));
+      questionInput.value = '';
+      questionInput.disabled = false;
+      askBtn.disabled = false;
+
+      const res = await fetch('/start', { method: 'POST' });
+      const data = await res.json();
+      maxTurns = data.max_turns;
+      updateTurnInfo(0);
+      questionInput.focus();
+    }
+
+    function updateTurnInfo(turn) {
+      turnInfo.textContent = '質問 ' + turn + ' / ' + maxTurns;
+    }
+
+    async function ask() {
+      const q = questionInput.value.trim();
+      if (!q) return;
+      askBtn.disabled = true;
+      questionInput.disabled = true;
+      addMsg(q, 'you', 'あなた');
+      questionInput.value = '';
+
+      try {
+        const res = await fetch('/ask', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question: q })
+        });
+        const data = await res.json();
+        if (data.error) {
+          addMsg('(' + data.error + ')', 'them', 'システム');
+        } else {
+          addMsg(data.reply, 'them', '相手');
+          updateTurnInfo(data.turn);
+          if (data.can_judge) {
+            // 質問上限 → 判定フェーズへ
+            inputRow.classList.add('hidden');
+            judgeBox.classList.remove('hidden');
+            return;
+          }
+        }
+      } catch (e) {
+        addMsg('(通信エラー)', 'them', 'システム');
+      }
+      askBtn.disabled = false;
+      questionInput.disabled = false;
+      questionInput.focus();
+    }
+
+    async function judge(guess) {
+      const res = await fetch('/judge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ guess: guess })
+      });
+      const data = await res.json();
+      judgeBox.classList.add('hidden');
+
+      const answerLabel = data.answer === 'ai' ? 'AI' : '人間';
+      const guessLabel = guess === 'ai' ? 'AI' : '人間';
+      resultBox.className = 'result ' + (data.correct ? 'correct' : 'wrong');
+      resultBox.innerHTML = (data.correct ? '✅ 正解！' : '❌ 不正解…') +
+        '<br>あなたの判定: ' + guessLabel +
+        '<br>相手の正体: ' + answerLabel;
+      // アンケートを表示(任意)
+      document.getElementById('survey').classList.remove('hidden');
+    }
+
+    // ===== アンケート =====
+    let selConfidence = null;
+    const selBasis = new Set();
+
+    document.getElementById('confidenceRow').addEventListener('click', e => {
+      if (e.target.tagName !== 'BUTTON') return;
+      selConfidence = parseInt(e.target.dataset.v);
+      [...e.currentTarget.children].forEach(b => b.classList.remove('sel'));
+      e.target.classList.add('sel');
+    });
+
+    document.getElementById('basisRow').addEventListener('click', e => {
+      if (e.target.tagName !== 'BUTTON') return;
+      const b = e.target.dataset.b;
+      if (selBasis.has(b)) { selBasis.delete(b); e.target.classList.remove('sel'); }
+      else { selBasis.add(b); e.target.classList.add('sel'); }
+    });
+
+    async function submitSurvey() {
+      const payload = {
+        confidence: selConfidence,
+        basis: [...selBasis].join(','),
+        free_text: document.getElementById('freeText').value.trim(),
+      };
+      try {
+        await fetch('/survey', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      } catch (e) { /* 失敗してもゲームは続行 */ }
+      finishSurvey();
+    }
+
+    function skipSurvey() {
+      // 何も送らずに閉じる
+      finishSurvey();
+    }
+
+    function finishSurvey() {
+      document.getElementById('survey').classList.add('hidden');
+      restartBtn.classList.remove('hidden');
+    }
+
+    askBtn.addEventListener('click', ask);
+    let isComposing = false;
+    questionInput.addEventListener('compositionstart', () => { isComposing = true; });
+    questionInput.addEventListener('compositionend', () => { isComposing = false; });
+    questionInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') {
+        if (isComposing || e.isComposing) return;  // 変換確定のEnterは送信しない
+        ask();
+      }
+    });
+
+    // ===== 画面遷移 =====
+    // 集める設定。将来オンライン化したとき、そのまま「部屋の設定」としてサーバへ送れる形にしておく。
+    const config = {
+      entry: null,          // 'single' | 'group'
+      visibility: null,     // 'public' | 'private'
+      roomKey: '',
+      maxPlayers: 4,
+      aiCount: 1,
+      humanAsAiCount: 0,
+    };
+
+    function showScreen(id) {
+      document.querySelectorAll('.screen').forEach(s => s.classList.add('hidden'));
+      document.getElementById(id).classList.remove('hidden');
+    }
+
+    function quitGame() {
+      // ブラウザではタブを確実には閉じられないため、終了画面を出す
+      document.body.innerHTML =
+        '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;' +
+        'color:var(--muted);font-family:inherit">プレイありがとうございました。タブを閉じて終了できます。</div>';
+    }
+
+    function chooseEntry(entry) {
+      config.entry = entry;
+      if (entry === 'single') showScreen('singleScreen');
+      else showScreen('roomCreateScreen');
+    }
+
+    // --- シングル ---
+    function startSinglePrep() {
+      showScreen('prepScreen');
+      const prepText = document.getElementById('prepText');
+      prepText.textContent = '対戦相手を準備しています…';
+      // 注: 対人オンラインマッチはまだ土台が無いので、今は必ずAIと対戦する。
+      // ここが将来「オンラインで人間を待つ／いなければAIで補填」の分岐点になる。
+      setTimeout(() => { prepText.textContent = '相手が見つかりました'; }, 900);
+      setTimeout(() => {
+        showScreen('gameArea');
+        startGame();
+      }, 1500);
+    }
+
+    // --- グループ: ルーム作成 ---
+    function chooseVisibility(v) {
+      config.visibility = v;
+      if (v === 'private') {
+        showScreen('privateScreen');
+      } else {
+        config.roomKey = '';
+        goToGameSettings();
+      }
+    }
+
+    document.getElementById('maxPlayersRow').addEventListener('click', e => {
+      if (e.target.tagName !== 'BUTTON') return;
+      config.maxPlayers = parseInt(e.target.dataset.n);
+      [...e.currentTarget.children].forEach(b => b.classList.remove('sel'));
+      e.target.classList.add('sel');
+    });
+
+    function goToGameSettings() {
+      if (config.visibility === 'private') {
+        config.roomKey = document.getElementById('roomKeyInput').value.trim();
+        if (!config.roomKey) { alert('合言葉を入力してください'); return; }
+      }
+      renderRoomSummary();
+      showScreen('gameSettingsScreen');
+    }
+
+    function renderRoomSummary() {
+      const s = document.getElementById('roomSummary');
+      if (config.visibility === 'public') {
+        s.textContent = '公開ルーム';
+      } else {
+        s.textContent = 'プライベートルーム / 合言葉: ' + config.roomKey +
+          ' / 上限: ' + config.maxPlayers + '人';
+      }
+    }
+
+    document.getElementById('aiCountRow').addEventListener('click', e => {
+      if (e.target.tagName !== 'BUTTON') return;
+      config.aiCount = parseInt(e.target.dataset.n);
+      [...e.currentTarget.children].forEach(b => b.classList.remove('sel'));
+      e.target.classList.add('sel');
+    });
+
+    document.getElementById('humanAsAiRow').addEventListener('click', e => {
+      if (e.target.tagName !== 'BUTTON') return;
+      config.humanAsAiCount = parseInt(e.target.dataset.n);
+      [...e.currentTarget.children].forEach(b => b.classList.remove('sel'));
+      e.target.classList.add('sel');
+    });
+
+    function backFromGameSettings() {
+      showScreen(config.visibility === 'private' ? 'privateScreen' : 'roomCreateScreen');
+    }
+
+    function startGroupGame() {
+      // グループ(オンライン)はまだ土台が無いので、設定だけ保持して準備中を知らせる。
+      // config には entry/visibility/roomKey/maxPlayers/aiCount/humanAsAiCount が入っている。
+      document.getElementById('groupPrepNote').textContent =
+        '※ グループ対戦はまだ遊べません。オンライン通信ができたら、この設定でルームを立てられます。';
+    }
+
+    // --- ゲーム後 ---
+    function backToSelect() {
+      // 「もう一度遊ぶ」でタイトルに戻る
+      showScreen('titleScreen');
+    }
+
+    // 起動時はタイトル画面
+    showScreen('titleScreen');
+  </script>
+</body>
+</html>
