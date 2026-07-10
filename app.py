@@ -22,9 +22,10 @@
 起動方法:
   pip install flask flask-socketio google-genai
   python app.py
-  ブラウザで http://127.0.0.1:5000 を開く
+  ブラウザで http://127.0.0.1:5001 を開く
   (オンラインの動作確認は2つのタブ/端末で「グループ→公開」)
-  プロトタイプの直接割当: http://127.0.0.1:5000/?force=ai または ?force=human
+  プロトタイプの直接割当: http://127.0.0.1:5001/?force=ai または ?force=human
+  (ポートを変えたい場合は環境変数 PORT を指定: PORT=5050 python app.py)
 """
 
 import os
@@ -633,6 +634,8 @@ def _on_disconnect(*args):
 
 if __name__ == "__main__":
     # ローカル開発用の起動 (本番は gunicorn 経由: render.yaml 参照)
-    port = int(os.environ.get("PORT", 5000))
+    # デフォルトを5001に変更: macOSの「AirPlay受信」がポート5000を
+    # 占有していることが多く、5000のままだと起動に失敗しやすいため。
+    port = int(os.environ.get("PORT", 5001))
     socketio.run(app, host="0.0.0.0", port=port,
                  debug=os.environ.get("FLASK_DEBUG", "1") == "1")
