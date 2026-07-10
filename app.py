@@ -22,10 +22,9 @@
 起動方法:
   pip install flask flask-socketio google-genai
   python app.py
-  ブラウザで http://127.0.0.1:5001 を開く
+    ブラウザで http://127.0.0.1:5001 を開く
   (オンラインの動作確認は2つのタブ/端末で「グループ→公開」)
-  プロトタイプの直接割当: http://127.0.0.1:5001/?force=ai または ?force=human
-  (ポートを変えたい場合は環境変数 PORT を指定: PORT=5050 python app.py)
+    プロトタイプの直接割当: http://127.0.0.1:5001/?force=ai または ?force=human
 """
 
 import os
@@ -298,6 +297,7 @@ def admin_export():
 _waiting = []      # 待機エントリ {sid, identity, forced, joined_at, deadline_s, notified}
 _rooms = {}        # room_id -> 部屋の状態 dict
 _sid_room = {}     # sid -> room_id (逆引き)
+_pending_private = {}  # 合言葉 -> {sid, mode, created_at} (ゲスト待ちのプライベート部屋)
 _lock = threading.Lock()
 _monitor_started = False
 
@@ -313,11 +313,13 @@ def _make_human_room(entry_a, entry_b):
     now = _now_mono()
     _rooms[room_id] = {
         "game_id": "game_" + uuid.uuid4().hex[:12],
+        "entry_type": QUICK_ENTRY,
         "is_ai": False,
         "ground_truth": "human",
         "backfilled": False,
         "asker": asker_e["sid"],
         "answerer": answerer_e["sid"],
+        "spectator": None,
         "turn": 0,
         "history": [],
         "saved": False,
@@ -340,11 +342,13 @@ def _make_ai_room(entry, backfilled):
     now = _now_mono()
     _rooms[room_id] = {
         "game_id": "game_" + uuid.uuid4().hex[:12],
+        "entry_type": QUICK_ENTRY,
         "is_ai": True,
         "ground_truth": "ai",
         "backfilled": backfilled,
         "asker": entry["sid"],
         "answerer": None,  # AI
+        "spectator": None,
         "turn": 0,
         "history": [],
         "saved": False,
@@ -366,10 +370,15 @@ def _notify_match(room_id):
     socketio.emit("match_found",
                   {"role": "asker", "max_turns": MAX_TURNS},
                   to=room["asker"])
-    if not room["is_ai"]:
+    if room["answerer"] is not None:
         socketio.emit("match_found",
                       {"role": "answerer", "max_turns": MAX_TURNS},
                       to=room["answerer"])
+    if room.get("spectator") is not None:
+        # プライベート・シャッフルでAIに置き換えられたホスト。観戦モード。
+        socketio.emit("match_found",
+                      {"role": "spectator", "max_turns": MAX_TURNS},
+                      to=room["spectator"])
 
 
 def _queue_monitor():
@@ -475,6 +484,133 @@ def _on_join_quick(data=None):
     _notify_match(room_id)
 
 
+# --------------------------------------------------------------------------
+#  プライベートマッチ (合言葉制・1対1)
+#
+#  2つのモード (部屋を作るホストが選ぶ):
+#    - human   … 人間同士の対戦。役割(質問者/回答者)はランダム割当
+#    - shuffle … ゲスト=質問者(判定者)固定。回答者は「ホスト」か「AI」の
+#                どちらかを確率0.5で決める。AIになった場合、ホストは観戦モード
+#                (会話は見えるが発言できない)。ゲストには結果までどちらか
+#                分からない —— 「友達かAIか」を当てるモード。
+#
+#  研究データ上の注意:
+#    - entry_type='private' で記録し、主解析(クイック)と区別する
+#    - humanモードは両者が知り合いで正体既知のため判定データとしては参考値
+#    - shuffleモードのゲスト判定は「候補が {友達, AI} と知っている」条件付き
+#      データとして扱う (assignment_mode='private_shuffle')
+#    - 3人以上のグループ戦は次フェーズ (この実装は1対1の土台)
+# --------------------------------------------------------------------------
+
+PRIVATE_ENTRY = "private"
+PRIVATE_SHUFFLE_AI_P = 0.5  # shuffleモードで回答者がAIになる確率
+
+
+def _make_private_room(host_sid, guest_sid, mode):
+    """プライベート部屋を作る。mode: 'human' | 'shuffle'"""
+    room_id = "room_" + uuid.uuid4().hex[:8]
+    base = {
+        "game_id": "game_" + uuid.uuid4().hex[:12],
+        "entry_type": PRIVATE_ENTRY,
+        "backfilled": False,
+        "spectator": None,
+        "turn": 0,
+        "history": [],
+        "saved": False,
+        "queue_wait_ms": None,       # プライベートは待機時間の意味が異なるため記録しない
+        "deadline_ms": None,         # Wなし
+        "prompt_version": None,
+        "delay_model_version": None,
+    }
+    if mode == "human":
+        asker, answerer = random.sample([host_sid, guest_sid], 2)
+        room = {**base,
+                "is_ai": False, "ground_truth": "human",
+                "asker": asker, "answerer": answerer,
+                "assignment_mode": "private_human"}
+    else:  # shuffle: ゲストが判定者。回答者はホストかAIか。
+        is_ai = random.random() < PRIVATE_SHUFFLE_AI_P
+        room = {**base,
+                "is_ai": is_ai,
+                "ground_truth": "ai" if is_ai else "human",
+                "asker": guest_sid,
+                "answerer": None if is_ai else host_sid,
+                "spectator": host_sid if is_ai else None,
+                "assignment_mode": "private_shuffle"}
+        if is_ai:
+            # D8: AI戦なのでプロンプト/遅延モデルを固定して記録
+            room["prompt_version"] = ai_backend.DEFAULT_PROMPT_VERSION
+            room["delay_model_version"] = delay_model.DELAY_MODEL_VERSION
+    _rooms[room_id] = room
+    for sid in (host_sid, guest_sid):
+        _sid_room[sid] = room_id
+    return room_id
+
+
+@socketio.on("create_private")
+def _on_create_private(data):
+    """ホストが合言葉で部屋を作る。ゲストが来るまで待機。"""
+    sid = request.sid
+    key = ((data or {}).get("key") or "").strip()
+    mode = (data or {}).get("mode", "human")
+    if not key:
+        emit("private_error", {"msg": "合言葉を入力してください"})
+        return
+    if mode not in ("human", "shuffle"):
+        emit("private_error", {"msg": "不正なモードです"})
+        return
+    with _lock:
+        if key in _pending_private:
+            emit("private_error",
+                 {"msg": "その合言葉は使用中です。別の合言葉にしてください"})
+            return
+        _pending_private[key] = {"sid": sid, "mode": mode,
+                                 "created_at": _now_mono()}
+    emit("private_created",
+         {"key": key, "msg": "合言葉を友達に伝えて、参加を待っています…"})
+
+
+@socketio.on("join_private")
+def _on_join_private(data):
+    """ゲストが合言葉で部屋に入る。ホストが待っていればゲーム開始。"""
+    sid = request.sid
+    key = ((data or {}).get("key") or "").strip()
+    if not key:
+        emit("private_error", {"msg": "合言葉を入力してください"})
+        return
+    with _lock:
+        pending = _pending_private.pop(key, None)
+        if pending is None:
+            emit("private_error",
+                 {"msg": "その合言葉の部屋が見つかりません。"
+                         "ホストが先に部屋を作っているか確認してください"})
+            return
+        if pending["sid"] == sid:
+            # ホストが自分の部屋に参加しようとした場合は戻す
+            _pending_private[key] = pending
+            emit("private_error", {"msg": "自分が作った部屋には参加できません"})
+            return
+        room_id = _make_private_room(pending["sid"], sid, pending["mode"])
+    _notify_match(room_id)
+
+
+@socketio.on("cancel_private")
+def _on_cancel_private(data=None):
+    """ホストが待機をやめる。"""
+    sid = request.sid
+    with _lock:
+        for key, pending in list(_pending_private.items()):
+            if pending["sid"] == sid:
+                _pending_private.pop(key, None)
+
+
+def _emit_spectate(room, kind, text):
+    """観戦者(shuffleでAIに置き換えられたホスト)に会話を中継する。"""
+    if room.get("spectator") is not None:
+        socketio.emit("spect_message", {"kind": kind, "text": text},
+                      to=room["spectator"])
+
+
 def _ai_reply_task(room_id):
     """AI戦の回答生成タスク。遅延を挿入してから回答を送る (b1)。"""
     room = _rooms.get(room_id)
@@ -500,6 +636,7 @@ def _ai_reply_task(room_id):
                   {"text": reply, "turn": room["turn"],
                    "max_turns": MAX_TURNS, "can_judge": can_judge},
                   to=room["asker"])
+    _emit_spectate(room, "answer", reply)
 
 
 @socketio.on("submit_question")
@@ -518,6 +655,7 @@ def _on_question(data):
         "role": "questioner", "text": text,
         "compose_time_ms": (data or {}).get("compose_time_ms"),
     })
+    _emit_spectate(room, "question", text)
     if room["is_ai"]:
         socketio.start_background_task(
             _ai_reply_task, _sid_room.get(sid))
@@ -561,7 +699,8 @@ def _save_online_game(room, guess, correct):
     is_ai = room["is_ai"]
     result = "human_correct" if correct else "human_wrong"
     db.save_game(
-        game_id=game_id, entry_type=QUICK_ENTRY, player_count=2,
+        game_id=game_id, entry_type=room.get("entry_type", QUICK_ENTRY),
+        player_count=2,
         ai_present=is_ai, ai_count=1 if is_ai else 0,
         ai_model=ai_backend.MODEL_NAME if is_ai else None,
         result=result,
@@ -610,23 +749,34 @@ def _on_judge(data):
     payload = {"correct": correct, "answer": answer,
                "your_guess": guess, "game_id": room["game_id"]}
     socketio.emit("result", {**payload, "you_are": "asker"}, to=room["asker"])
-    if not room["is_ai"]:
+    if room["answerer"] is not None:
         socketio.emit("result", {**payload, "you_are": "answerer"},
                       to=room["answerer"])
+    if room.get("spectator") is not None:
+        socketio.emit("result", {**payload, "you_are": "spectator"},
+                      to=room["spectator"])
 
 
 @socketio.on("disconnect")
 def _on_disconnect(*args):
-    """切断時のクリーンアップ。待機列/部屋から除去し、相手に通知する。"""
+    """切断時のクリーンアップ。待機列/保留部屋/部屋から除去し、相手に通知する。"""
     sid = request.sid
     with _lock:
         _waiting[:] = [e for e in _waiting if e["sid"] != sid]
+        for key, pending in list(_pending_private.items()):
+            if pending["sid"] == sid:
+                _pending_private.pop(key, None)
     room_id = _sid_room.pop(sid, None)
     if room_id and room_id in _rooms:
         room = _rooms[room_id]
-        if not room["is_ai"]:
-            other = (room["answerer"] if sid == room["asker"]
-                     else room["asker"])
+        if sid == room.get("spectator"):
+            # 観戦者(shuffleのホスト)が抜けてもゲームは続行できる
+            room["spectator"] = None
+            return
+        others = [s for s in (room["asker"], room["answerer"],
+                              room.get("spectator"))
+                  if s is not None and s != sid]
+        for other in others:
             _sid_room.pop(other, None)
             socketio.emit("opponent_left", {}, to=other)
         _rooms.pop(room_id, None)
@@ -634,8 +784,6 @@ def _on_disconnect(*args):
 
 if __name__ == "__main__":
     # ローカル開発用の起動 (本番は gunicorn 経由: render.yaml 参照)
-    # デフォルトを5001に変更: macOSの「AirPlay受信」がポート5000を
-    # 占有していることが多く、5000のままだと起動に失敗しやすいため。
     port = int(os.environ.get("PORT", 5001))
     socketio.run(app, host="0.0.0.0", port=port,
                  debug=os.environ.get("FLASK_DEBUG", "1") == "1")

@@ -199,6 +199,105 @@ check("queue_wait_ms 記録", g4["queue_wait_ms"] is not None)
 c4.disconnect()
 
 # ============================================================
+print("5. プライベートマッチ (humanモード)")
+h1 = socketio.test_client(app)
+g1 = socketio.test_client(app)
+h1.emit("create_private", {"key": "neko123", "mode": "human"})
+created = wait_for(h1, "private_created", 2)
+check("private_created 受信", created is not None and created["key"] == "neko123")
+
+# 誤った合言葉では入れない
+bad = socketio.test_client(app)
+bad.emit("join_private", {"key": "inu999"})
+err = wait_for(bad, "private_error", 2)
+check("誤合言葉は private_error", err is not None)
+bad.disconnect()
+
+# 同じ合言葉の二重作成は拒否
+dup = socketio.test_client(app)
+dup.emit("create_private", {"key": "neko123", "mode": "human"})
+err2 = wait_for(dup, "private_error", 2)
+check("合言葉の重複作成は拒否", err2 is not None)
+dup.disconnect()
+
+g1.emit("join_private", {"key": "neko123"})
+mh = wait_for(h1, "match_found", 2)
+mg = wait_for(g1, "match_found", 2)
+check("両者に match_found", mh is not None and mg is not None)
+check("役割は asker/answerer", {mh["role"], mg["role"]} == {"asker", "answerer"})
+
+p_asker, p_answerer = (h1, g1) if mh["role"] == "asker" else (g1, h1)
+for turn in range(app_module.MAX_TURNS):
+    p_asker.emit("submit_question",
+                 {"text": f"P質問{turn+1}", "compose_time_ms": 3000})
+    assert wait_for(p_answerer, "question", 2) is not None
+    p_answerer.emit("submit_answer",
+                    {"text": f"P回答{turn+1}", "compose_time_ms": 4000})
+    a = wait_for(p_asker, "answer", 2)
+check("5ターン完走", a is not None and a.get("can_judge") is True)
+p_asker.emit("submit_judge", {"guess": "human"})
+rp = wait_for(p_asker, "result", 2)
+check("判定は正解 (human)", rp is not None and rp["correct"] is True)
+gp = db_row("SELECT * FROM games WHERE game_id=?", (rp["game_id"],))
+check("entry_type='private'", gp["entry_type"] == "private")
+check("assignment_mode='private_human'", gp["assignment_mode"] == "private_human")
+h1.disconnect()
+g1.disconnect()
+
+# ============================================================
+print("6. プライベートマッチ (shuffleモード・AI側)")
+app_module.PRIVATE_SHUFFLE_AI_P = 1.0  # 必ずAIを引かせる
+h2 = socketio.test_client(app)
+g2 = socketio.test_client(app)
+h2.emit("create_private", {"key": "tori77", "mode": "shuffle"})
+wait_for(h2, "private_created", 2)
+g2.emit("join_private", {"key": "tori77"})
+mh2 = wait_for(h2, "match_found", 2)
+mg2 = wait_for(g2, "match_found", 2)
+check("ホストは観戦者", mh2 is not None and mh2["role"] == "spectator")
+check("ゲストは質問者", mg2 is not None and mg2["role"] == "asker")
+
+for turn in range(app_module.MAX_TURNS):
+    g2.emit("submit_question",
+            {"text": f"S質問{turn+1}", "compose_time_ms": 3500})
+    a2 = wait_for(g2, "answer", 5)
+    check(f"AI回答{turn+1}をゲストが受信", a2 is not None)
+sp = wait_for(h2, "spect_message", 2)
+check("観戦者に会話が中継される", sp is not None)
+
+g2.emit("submit_judge", {"guess": "ai"})
+rg = wait_for(g2, "result", 2)
+rh = wait_for(h2, "result", 2)
+check("ゲストに result", rg is not None and rg["correct"] is True)
+check("観戦者にも result", rh is not None and rh.get("you_are") == "spectator")
+gs = db_row("SELECT * FROM games WHERE game_id=?", (rg["game_id"],))
+check("entry_type='private'", gs["entry_type"] == "private")
+check("assignment_mode='private_shuffle'", gs["assignment_mode"] == "private_shuffle")
+check("ground_truth='ai'", gs["ground_truth_identity"] == "ai")
+check("prompt_version 記録", gs["prompt_version"] is not None)
+h2.disconnect()
+g2.disconnect()
+
+# ============================================================
+print("7. プライベートマッチ (shuffleモード・人間側)")
+app_module.PRIVATE_SHUFFLE_AI_P = 0.0  # 必ずホスト(人間)を引かせる
+h3 = socketio.test_client(app)
+g3 = socketio.test_client(app)
+h3.emit("create_private", {"key": "kuma5", "mode": "shuffle"})
+wait_for(h3, "private_created", 2)
+g3.emit("join_private", {"key": "kuma5"})
+mh3 = wait_for(h3, "match_found", 2)
+mg3 = wait_for(g3, "match_found", 2)
+check("ホストは回答者", mh3 is not None and mh3["role"] == "answerer")
+check("ゲストは質問者", mg3 is not None and mg3["role"] == "asker")
+g3.emit("submit_question", {"text": "友達?", "compose_time_ms": 2000})
+check("ホストが質問受信", wait_for(h3, "question", 2) is not None)
+h3.emit("submit_answer", {"text": "さあね", "compose_time_ms": 3000})
+check("ゲストが回答受信", wait_for(g3, "answer", 2) is not None)
+h3.disconnect()
+g3.disconnect()
+
+# ============================================================
 print()
 print(f"結果: {PASS} passed / {FAIL} failed")
 if os.path.exists("test_game.db"):
