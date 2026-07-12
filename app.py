@@ -22,9 +22,9 @@
 起動方法:
   pip install flask flask-socketio google-genai
   python app.py
-    ブラウザで http://127.0.0.1:5001 を開く
+  ブラウザで http://127.0.0.1:5000 を開く
   (オンラインの動作確認は2つのタブ/端末で「グループ→公開」)
-    プロトタイプの直接割当: http://127.0.0.1:5001/?force=ai または ?force=human
+  プロトタイプの直接割当: http://127.0.0.1:5000/?force=ai または ?force=human
 """
 
 import os
@@ -579,6 +579,18 @@ def _on_join_private(data):
         emit("private_error", {"msg": "合言葉を入力してください"})
         return
     with _lock:
+        # グループの合言葉が優先 (同名は作成時に弾いているので競合しない)
+        g = _pending_groups.get(key)
+        if g is not None and not g["started"]:
+            if sid in g["members"]:
+                emit("private_error", {"msg": "すでに参加しています"})
+                return
+            g["members"].append(sid)
+            full = len(g["members"]) >= g["config"]["humans"]
+            _broadcast_lobby(key)
+            if full:
+                _start_group(key)
+            return
         pending = _pending_private.pop(key, None)
         if pending is None:
             emit("private_error",
@@ -602,6 +614,16 @@ def _on_cancel_private(data=None):
         for key, pending in list(_pending_private.items()):
             if pending["sid"] == sid:
                 _pending_private.pop(key, None)
+        for key, g in list(_pending_groups.items()):
+            if g["host_sid"] == sid:
+                for m in g["members"]:
+                    if m != sid:
+                        socketio.emit("private_error",
+                                      {"msg": "ホストが部屋を閉じました"}, to=m)
+                _pending_groups.pop(key, None)
+            elif sid in g["members"]:
+                g["members"].remove(sid)
+                _broadcast_lobby(key)
 
 
 def _emit_spectate(room, kind, text):
@@ -609,6 +631,396 @@ def _emit_spectate(room, kind, text):
     if room.get("spectator") is not None:
         socketio.emit("spect_message", {"kind": kind, "text": text},
                       to=room["spectator"])
+
+
+
+# --------------------------------------------------------------------------
+#  グループ戦 (プライベート・合言葉制・インタビューパネル形式)
+#
+#  構造 (非対称型の大人数拡張。1対1を内包する):
+#    - 判定者1人 (参加した人間からランダム選出)
+#    - 回答者パネル = 残りの人間 + AI(ホスト設定数) + AIのふり役(人間から抽選)
+#    - 判定者が質問 → パネル全員が匿名(プレイヤーA/B/C...)で回答 × MAX_TURNS
+#    - 最後に判定者が全員を人間/AIにラベル付け。正答数がスコア
+#    - 回答者の勝利条件: 人間=人間と見抜かれる / AIのふり役=AIと誤認させる
+#
+#  配役モード (roleplay=true):
+#    全回答者(AI含む)に役柄カードを配布し、なりきって回答する遊びモード。
+#    ※設計段階で「研究価値が薄い」として主線から除外された案のため、
+#      entry_type='private_group' + games.prompt_version='rp-v1' で
+#      研究データから分離できる形で実装している。
+#
+#  研究データ上の注意:
+#    - クイックのグループ(ランダム構成マッチング)は次フェーズ。
+#      N人同時キューの成立性とグループでのタイミング中立化は別設計問題。
+#    - ホストが判定者に選ばれた場合、ホストは構成(AI数等)を知っているため
+#      判定の難易度が下がる。games.result とは別に解析時に考慮すること。
+# --------------------------------------------------------------------------
+
+GROUP_ENTRY = "private_group"
+GROUP_MAX_HUMANS = 6
+GROUP_MAX_AI = 3
+
+PERSONA_CARDS = [
+    "関西弁のおばちゃん", "中二病の高校生", "丁寧すぎる執事",
+    "語尾が「にゃ」になる猫", "昭和の頑固親父", "ポエムを語りがちな詩人",
+    "テンション高めのギャル", "言葉少なな忍者",
+]
+
+_pending_groups = {}  # 合言葉 -> {host_sid, config, members(sid一覧), started}
+
+
+def _alias_name(i):
+    return "プレイヤー" + chr(ord("A") + i)
+
+
+def _group_room(room_id):
+    room = _rooms.get(room_id)
+    return room if room and room.get("group") else None
+
+
+@socketio.on("create_group")
+def _on_create_group(data):
+    """ホストがグループ部屋を作る。config: key/humans/ai_count/human_as_ai/roleplay"""
+    sid = request.sid
+    d = data or {}
+    key = (d.get("key") or "").strip()
+    try:
+        humans = int(d.get("humans", 2))
+        ai_count = int(d.get("ai_count", 1))
+        haa = int(d.get("human_as_ai", 0))
+    except (TypeError, ValueError):
+        emit("private_error", {"msg": "人数の指定が不正です"})
+        return
+    roleplay = bool(d.get("roleplay", False))
+    if not key:
+        emit("private_error", {"msg": "合言葉を入力してください"})
+        return
+    if not (2 <= humans <= GROUP_MAX_HUMANS):
+        emit("private_error", {"msg": f"人間は2〜{GROUP_MAX_HUMANS}人です"})
+        return
+    if not (0 <= ai_count <= GROUP_MAX_AI):
+        emit("private_error", {"msg": f"AIは0〜{GROUP_MAX_AI}体です"})
+        return
+    # 回答者パネル = (humans - 判定者1) + ai_count は最低1必要
+    if (humans - 1) + ai_count < 1:
+        emit("private_error", {"msg": "回答者が0人になる設定です"})
+        return
+    if not (0 <= haa <= humans - 1):
+        emit("private_error", {"msg": "AIのふり役が人間の回答者数を超えています"})
+        return
+    with _lock:
+        if key in _pending_private or key in _pending_groups:
+            emit("private_error", {"msg": "その合言葉は使用中です"})
+            return
+        _pending_groups[key] = {
+            "host_sid": sid, "members": [sid], "started": False,
+            "config": {"humans": humans, "ai_count": ai_count,
+                       "human_as_ai": haa, "roleplay": roleplay},
+        }
+    emit("group_lobby", {"key": key, "joined": 1, "needed": humans,
+                         "is_host": True})
+
+
+def _broadcast_lobby(key):
+    g = _pending_groups.get(key)
+    if not g:
+        return
+    for i, m in enumerate(g["members"]):
+        socketio.emit("group_lobby",
+                      {"key": key, "joined": len(g["members"]),
+                       "needed": g["config"]["humans"],
+                       "is_host": (m == g["host_sid"])},
+                      to=m)
+
+
+def _start_group(key):
+    """人数が揃ったら(またはホスト開始で)ゲームを構成して開始する。"""
+    g = _pending_groups.pop(key, None)
+    if not g or g["started"]:
+        return
+    g["started"] = True
+    cfg = g["config"]
+    members = list(g["members"])
+
+    judge = random.choice(members)
+    human_answerers = [m for m in members if m != judge]
+    # AIのふり役を人間回答者から抽選 (人数が足りなければ全員まで)
+    haa_n = min(cfg["human_as_ai"], len(human_answerers))
+    haa_set = set(random.sample(human_answerers, haa_n)) if haa_n else set()
+
+    panel = []
+    for m in human_answerers:
+        panel.append({"sid": m,
+                      "kind": "human_as_ai" if m in haa_set else "human",
+                      "persona": None, "left": False})
+    for _ in range(cfg["ai_count"]):
+        panel.append({"sid": None, "kind": "ai", "persona": None,
+                      "left": False})
+    random.shuffle(panel)
+    personas = random.sample(PERSONA_CARDS, len(panel)) \
+        if cfg["roleplay"] else [None] * len(panel)
+    for i, p in enumerate(panel):
+        p["alias"] = _alias_name(i)
+        p["persona"] = personas[i]
+
+    room_id = "room_" + uuid.uuid4().hex[:8]
+    has_ai = cfg["ai_count"] > 0
+    _rooms[room_id] = {
+        "game_id": "game_" + uuid.uuid4().hex[:12],
+        "group": True,
+        "entry_type": GROUP_ENTRY,
+        "roleplay": cfg["roleplay"],
+        "judge": judge,
+        "host": g["host_sid"],
+        "panel": panel,
+        "turn": 0,
+        "pending": set(),        # 今ターンで未回答のalias
+        "current_q": None,       # {"text","compose_time_ms"}
+        "log": [],               # 保存用の時系列ログ
+        "saved": False,
+        "prompt_version": (ai_backend.ROLEPLAY_PROMPT_VERSION
+                           if cfg["roleplay"] else
+                           ai_backend.DEFAULT_PROMPT_VERSION) if has_ai else None,
+        "delay_model_version": (delay_model.DELAY_MODEL_VERSION
+                                if has_ai else None),
+    }
+    _sid_room[judge] = room_id
+    for p in panel:
+        if p["sid"] is not None:
+            _sid_room[p["sid"]] = room_id
+
+    # 通知: 判定者にはパネルの匿名一覧、回答者には自分の役どころだけ
+    socketio.emit("group_started",
+                  {"role": "judge", "max_turns": MAX_TURNS,
+                   "aliases": [p["alias"] for p in panel]},
+                  to=judge)
+    for p in panel:
+        if p["sid"] is None:
+            continue
+        socketio.emit("group_started",
+                      {"role": "answerer", "max_turns": MAX_TURNS,
+                       "alias": p["alias"],
+                       "act_as_ai": p["kind"] == "human_as_ai",
+                       "persona": p["persona"]},
+                      to=p["sid"])
+
+
+@socketio.on("start_group")
+def _on_start_group(data):
+    """ホストが手動開始する (2人以上集まっていれば人数未満でも開始可)。"""
+    sid = request.sid
+    key = ((data or {}).get("key") or "").strip()
+    with _lock:
+        g = _pending_groups.get(key)
+        if not g or g["host_sid"] != sid:
+            return
+        if len(g["members"]) < 2:
+            socketio.emit("private_error",
+                          {"msg": "開始には2人以上必要です"}, to=sid)
+            return
+        # 実際に集まった人数で構成し直す
+        g["config"]["humans"] = len(g["members"])
+        g["config"]["human_as_ai"] = min(g["config"]["human_as_ai"],
+                                         len(g["members"]) - 1)
+    _start_group(key)
+
+
+def _group_ai_task(room_id, panel_index):
+    """グループ戦のAIパネリスト1体ぶんの回答生成 (b1遅延つき)。"""
+    room = _group_room(room_id)
+    if not room:
+        return
+    p = room["panel"][panel_index]
+    history = [{"role": "questioner", "text": e["text"]}
+               for e in room["log"] if e["kind"] == "question"]
+    reply = ai_backend.generate_reply(
+        history, prompt_version=room["prompt_version"],
+        persona=p["persona"])
+    delay_s = delay_model.draw_reply_delay_s(len(reply))
+    socketio.sleep(delay_s)
+    room = _group_room(room_id)
+    if not room:
+        return
+    _group_receive_answer(room_id, p["alias"], reply,
+                          compose_time_ms=None,
+                          displayed_delay_ms=int(delay_s * 1000))
+
+
+def _group_receive_answer(room_id, alias, text,
+                          compose_time_ms, displayed_delay_ms):
+    """人間/AI共通の回答受付。判定者へ中継し、全員揃ったらターンを締める。"""
+    room = _group_room(room_id)
+    if not room or alias not in room["pending"]:
+        return
+    room["pending"].discard(alias)
+    room["log"].append({"kind": "answer", "turn": room["turn"],
+                        "alias": alias, "text": text,
+                        "compose_time_ms": compose_time_ms,
+                        "displayed_delay_ms": displayed_delay_ms})
+    active = [p for p in room["panel"]
+              if not p["left"] or p["sid"] is None]
+    socketio.emit("group_answer",
+                  {"alias": alias, "text": text, "turn": room["turn"],
+                   "answered": len(active) - len(room["pending"]),
+                   "panel_size": len(active)},
+                  to=room["judge"])
+    if not room["pending"]:
+        can_judge = room["turn"] >= MAX_TURNS
+        socketio.emit("group_turn_complete",
+                      {"turn": room["turn"], "max_turns": MAX_TURNS,
+                       "can_judge": can_judge},
+                      to=room["judge"])
+
+
+@socketio.on("submit_group_question")
+def _on_group_question(data):
+    """判定者の質問。人間回答者へ配信し、AI回答タスクを起動する。"""
+    sid = request.sid
+    room_id = _sid_room.get(sid)
+    room = _group_room(room_id)
+    if not room or sid != room["judge"]:
+        return
+    if room["pending"] or room["turn"] >= MAX_TURNS:
+        return  # 前ターン未完 or 上限
+    text = ((data or {}).get("text") or "").strip()
+    if not text:
+        return
+    room["turn"] += 1
+    room["log"].append({"kind": "question", "turn": room["turn"],
+                        "alias": None, "text": text,
+                        "compose_time_ms": (data or {}).get("compose_time_ms"),
+                        "displayed_delay_ms": None})
+    room["pending"] = {p["alias"] for p in room["panel"] if not p["left"]}
+    for i, p in enumerate(room["panel"]):
+        if p["left"]:
+            continue
+        if p["sid"] is None:
+            socketio.start_background_task(_group_ai_task, room_id, i)
+        else:
+            socketio.emit("group_question",
+                          {"text": text, "turn": room["turn"],
+                           "max_turns": MAX_TURNS},
+                          to=p["sid"])
+
+
+@socketio.on("submit_group_answer")
+def _on_group_answer(data):
+    """(人間の回答者) 自分のaliasで回答する。"""
+    sid = request.sid
+    room_id = _sid_room.get(sid)
+    room = _group_room(room_id)
+    if not room:
+        return
+    me = next((p for p in room["panel"] if p["sid"] == sid), None)
+    if me is None:
+        return
+    text = ((data or {}).get("text") or "").strip()
+    if not text:
+        return
+    _group_receive_answer(room_id, me["alias"], text,
+                          compose_time_ms=(data or {}).get("compose_time_ms"),
+                          displayed_delay_ms=None)
+
+
+def _save_group_game(room, labels, n_correct, n_total):
+    if room.get("saved"):
+        return
+    game_id = room["game_id"]
+    ai_n = sum(1 for p in room["panel"] if p["kind"] == "ai")
+    db.save_game(
+        game_id=game_id, entry_type=GROUP_ENTRY,
+        player_count=1 + len(room["panel"]),
+        ai_present=ai_n > 0, ai_count=ai_n,
+        ai_model=ai_backend.MODEL_NAME if ai_n else None,
+        result=f"{n_correct}/{n_total}",
+        ground_truth_identity=None,   # グループは1対1のground_truthを持たない
+        backfilled=False,
+        queue_wait_ms=None, ai_switch_deadline_ms=None,
+        prompt_version=room["prompt_version"],
+        delay_model_version=room["delay_model_version"],
+        assignment_mode="private_group",
+    )
+    db.save_player(game_id, "p_judge", role="human",
+                   vote_target=None, correct=None, alias="判定者")
+    for p in room["panel"]:
+        label = labels.get(p["alias"])
+        truth_is_ai = (p["kind"] == "ai")
+        correct = (None if label is None
+                   else (label == "ai") == truth_is_ai)
+        db.save_player(game_id, "p_" + p["alias"], role=p["kind"],
+                       vote_target=None, correct=correct,
+                       judged_as=label, persona=p["persona"],
+                       alias=p["alias"])
+    # メッセージ: 質問→そのターンの各回答(reply_to=質問id)
+    qid_by_turn = {}
+    for e in room["log"]:
+        if e["kind"] == "question":
+            qid_by_turn[e["turn"]] = db.save_message(
+                game_id, e["turn"], "p_judge", "question", e["text"],
+                compose_time_ms=e["compose_time_ms"])
+        else:
+            db.save_message(
+                game_id, e["turn"], "p_" + e["alias"], "answer",
+                e["text"], reply_to=qid_by_turn.get(e["turn"]),
+                compose_time_ms=e["compose_time_ms"],
+                displayed_delay_ms=e["displayed_delay_ms"])
+    room["saved"] = True
+
+
+@socketio.on("submit_group_judgement")
+def _on_group_judgement(data):
+    """判定者の最終ラベル付け {labels: {alias: 'ai'|'human'}} を受け取る。"""
+    sid = request.sid
+    room_id = _sid_room.get(sid)
+    room = _group_room(room_id)
+    if not room or sid != room["judge"]:
+        return
+    if room["turn"] < 1:
+        return
+    labels = (data or {}).get("labels") or {}
+    reveal = []
+    n_correct = 0
+    n_total = 0
+    for p in room["panel"]:
+        label = labels.get(p["alias"])
+        truth_is_ai = (p["kind"] == "ai")
+        ok = (label == "ai") == truth_is_ai if label else None
+        if ok is not None:
+            n_total += 1
+            n_correct += int(ok)
+        reveal.append({"alias": p["alias"],
+                       "truth": "ai" if truth_is_ai else "human",
+                       "was_acting": p["kind"] == "human_as_ai",
+                       "judged_as": label, "correct": ok,
+                       "persona": p["persona"]})
+    _save_group_game(room, labels, n_correct, n_total)
+
+    socketio.emit("group_result",
+                  {"you_are": "judge", "score": n_correct,
+                   "total": n_total, "reveal": reveal,
+                   "game_id": room["game_id"]},
+                  to=room["judge"])
+    for p in room["panel"]:
+        if p["sid"] is None:
+            continue
+        label = labels.get(p["alias"])
+        if p["kind"] == "human_as_ai":
+            won = (label == "ai")     # AIと誤認させたら勝ち
+        else:
+            won = (label == "human")  # 人間と見抜かれたら勝ち
+        socketio.emit("group_result",
+                      {"you_are": "answerer", "alias": p["alias"],
+                       "your_kind": p["kind"], "judged_as": label,
+                       "you_won": won, "reveal": reveal,
+                       "game_id": room["game_id"]},
+                      to=p["sid"])
+    # 部屋の後始末
+    _sid_room.pop(room["judge"], None)
+    for p in room["panel"]:
+        if p["sid"] is not None:
+            _sid_room.pop(p["sid"], None)
+    _rooms.pop(room_id, None)
 
 
 def _ai_reply_task(room_id):
@@ -766,9 +1178,40 @@ def _on_disconnect(*args):
         for key, pending in list(_pending_private.items()):
             if pending["sid"] == sid:
                 _pending_private.pop(key, None)
+        for key, g in list(_pending_groups.items()):
+            if g["host_sid"] == sid:
+                for m in g["members"]:
+                    if m != sid:
+                        socketio.emit("private_error",
+                                      {"msg": "ホストが退出しました"}, to=m)
+                _pending_groups.pop(key, None)
+            elif sid in g["members"]:
+                g["members"].remove(sid)
+                _broadcast_lobby(key)
     room_id = _sid_room.pop(sid, None)
     if room_id and room_id in _rooms:
         room = _rooms[room_id]
+        if room.get("group"):
+            if sid == room["judge"]:
+                # 判定者が抜けたらゲーム終了
+                for p in room["panel"]:
+                    if p["sid"] is not None:
+                        _sid_room.pop(p["sid"], None)
+                        socketio.emit("opponent_left", {}, to=p["sid"])
+                _rooms.pop(room_id, None)
+            else:
+                # 回答者が抜けたらパネルから外して続行
+                for p in room["panel"]:
+                    if p["sid"] == sid:
+                        p["left"] = True
+                        room["pending"].discard(p["alias"])
+                if room["pending"] == set() and room["turn"] >= 1:
+                    socketio.emit("group_turn_complete",
+                                  {"turn": room["turn"],
+                                   "max_turns": MAX_TURNS,
+                                   "can_judge": room["turn"] >= MAX_TURNS},
+                                  to=room["judge"])
+            return
         if sid == room.get("spectator"):
             # 観戦者(shuffleのホスト)が抜けてもゲームは続行できる
             room["spectator"] = None
@@ -784,6 +1227,6 @@ def _on_disconnect(*args):
 
 if __name__ == "__main__":
     # ローカル開発用の起動 (本番は gunicorn 経由: render.yaml 参照)
-    port = int(os.environ.get("PORT", 5001))
+    port = int(os.environ.get("PORT", 5000))
     socketio.run(app, host="0.0.0.0", port=port,
                  debug=os.environ.get("FLASK_DEBUG", "1") == "1")
