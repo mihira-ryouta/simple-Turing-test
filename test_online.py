@@ -298,6 +298,100 @@ h3.disconnect()
 g3.disconnect()
 
 # ============================================================
+print("8. グループ戦 (人間3 + AI1 + AIのふり1・配役あり)")
+gh = socketio.test_client(app)   # ホスト
+ga = socketio.test_client(app)   # ゲスト1
+gb = socketio.test_client(app)   # ゲスト2
+gh.emit("create_group", {"key": "mura8", "humans": 3, "ai_count": 1,
+                         "human_as_ai": 1, "roleplay": True})
+lb = wait_for(gh, "group_lobby", 2)
+check("ロビー作成 (1/3)", lb is not None and lb["joined"] == 1)
+ga.emit("join_private", {"key": "mura8"})
+lb2 = wait_for(gh, "group_lobby", 2)
+check("ロビー更新 (2/3)", lb2 is not None and lb2["joined"] == 2)
+gb.emit("join_private", {"key": "mura8"})
+time.sleep(0.3)
+
+clients = {"host": gh, "a": ga, "b": gb}
+starts = {}
+for name, c in clients.items():
+    starts[name] = wait_for(c, "group_started", 3)
+check("全員に group_started", all(s is not None for s in starts.values()))
+judges = [n for n, s in starts.items() if s["role"] == "judge"]
+answerers = [n for n, s in starts.items() if s["role"] == "answerer"]
+check("判定者1人・回答者2人(人間)", len(judges) == 1 and len(answerers) == 2)
+check("判定者のパネルは3枠 (人間2+AI1)",
+      len(starts[judges[0]]["aliases"]) == 3)
+check("AIのふり役が1人",
+      sum(1 for n in answerers if starts[n]["act_as_ai"]) == 1)
+check("配役が全回答者に配布",
+      all(starts[n]["persona"] for n in answerers))
+
+judge_c = clients[judges[0]]
+for turn in range(app_module.MAX_TURNS):
+    judge_c.emit("submit_group_question",
+                 {"text": f"G質問{turn+1}", "compose_time_ms": 3000})
+    for n in answerers:
+        q = wait_for(clients[n], "group_question", 3)
+        assert q is not None, f"{n} が質問{turn+1}を未受信"
+        clients[n].emit("submit_group_answer",
+                        {"text": f"{n}の回答{turn+1}", "compose_time_ms": 4000})
+    tc = wait_for(judge_c, "group_turn_complete", 6)
+    check(f"ターン{turn+1}完了 (AI含む全回答が揃う)", tc is not None)
+check("最終ターンで can_judge", tc and tc.get("can_judge") is True)
+
+# 全部 "human" とラベル → AI1体ぶんだけ不正解 = 2/3
+aliases = starts[judges[0]]["aliases"]
+judge_c.emit("submit_group_judgement",
+             {"labels": {a: "human" for a in aliases}})
+rj = wait_for(judge_c, "group_result", 3)
+check("判定者に group_result", rj is not None and rj["you_are"] == "judge")
+check("スコア 2/3 (AIのみ外す)", rj and rj["score"] == 2 and rj["total"] == 3)
+ra = [wait_for(clients[n], "group_result", 3) for n in answerers]
+check("回答者にも group_result", all(r is not None for r in ra))
+haa_res = next(r for r in ra if r["your_kind"] == "human_as_ai")
+check("AIのふり役: humanと判定され敗北", haa_res["you_won"] is False)
+
+gg = db_row("SELECT * FROM games WHERE game_id=?", (rj["game_id"],))
+check("entry_type='private_group'", gg["entry_type"] == "private_group")
+check("result='2/3'", gg["result"] == "2/3")
+check("prompt_version='rp-v1' (配役)", gg["prompt_version"] == "rp-v1")
+prs = db_rows("SELECT * FROM players WHERE game_id=?", (rj["game_id"],))
+check("players 4行 (判定者+パネル3)", len(prs) == 4)
+roles = sorted(p["role"] for p in prs)
+check("役割构成 human×2, ai, human_as_ai",
+      roles == ["ai", "human", "human", "human_as_ai"])
+check("パネルに judged_as 記録",
+      all(p["judged_as"] == "human" for p in prs if p["alias"] != "判定者"))
+check("配役 persona 記録",
+      all(p["persona"] for p in prs if p["role"] != "human" or p["alias"] != "判定者"))
+gmsgs = db_rows("SELECT * FROM messages WHERE game_id=? ORDER BY id",
+                (rj["game_id"],))
+check("メッセージ 5質問+15回答",
+      sum(1 for m in gmsgs if m["kind"] == "question") == 5
+      and sum(1 for m in gmsgs if m["kind"] == "answer") == 15)
+check("AI回答に displayed_delay_ms",
+      all(m["displayed_delay_ms"] is not None for m in gmsgs
+          if m["kind"] == "answer" and m["compose_time_ms"] is None))
+gh.disconnect(); ga.disconnect(); gb.disconnect()
+
+# ============================================================
+print("9. グループ戦の異常系")
+e1 = socketio.test_client(app)
+e1.emit("create_group", {"key": "solo", "humans": 2, "ai_count": 0,
+                         "human_as_ai": 0, "roleplay": False})
+wait_for(e1, "group_lobby", 2)
+e1.emit("start_group", {"key": "solo"})
+err_solo = wait_for(e1, "private_error", 2)
+check("1人では開始不可", err_solo is not None)
+e2 = socketio.test_client(app)
+e2.emit("create_group", {"key": "solo", "humans": 2, "ai_count": 1,
+                         "human_as_ai": 0})
+errd = wait_for(e2, "private_error", 2)
+check("グループでも合言葉の重複は拒否", errd is not None)
+e1.disconnect(); e2.disconnect()
+
+# ============================================================
 print()
 print(f"結果: {PASS} passed / {FAIL} failed")
 if os.path.exists("test_game.db"):

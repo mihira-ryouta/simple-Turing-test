@@ -43,6 +43,9 @@ def _conn():
 
 # 既存DBへ足す列の一覧 (テーブル, 列名, 型と制約)。冪等マイグレーションに使う。
 _MIGRATION_COLUMNS = [
+    ("players",  "judged_as",             "TEXT"),     # 判定者がこの人に付けたラベル ('ai'/'human')
+    ("players",  "persona",               "TEXT"),     # 配役モードの役柄
+    ("players",  "alias",                 "TEXT"),     # ゲーム中の匿名表示名 (A/B/C...)
     ("messages", "char_count",            "INTEGER"),
     ("messages", "compose_time_ms",       "INTEGER"),
     ("messages", "displayed_delay_ms",    "INTEGER"),
@@ -87,6 +90,9 @@ def init_db():
             role        TEXT,               -- human / ai / human_as_ai
             vote_target TEXT,               -- 投票先の player_id
             correct     INTEGER,            -- 投票が当たったか 0/1 (AIはNULL)
+            judged_as   TEXT,               -- 判定者が付けたラベル (グループ)
+            persona     TEXT,               -- 配役モードの役柄
+            alias       TEXT,               -- 匿名表示名 (A/B/C...)
             FOREIGN KEY (game_id) REFERENCES games(game_id)
         );
 
@@ -161,14 +167,17 @@ def save_game(game_id, entry_type, player_count, ai_present,
         )
 
 
-def save_player(game_id, player_id, role, vote_target, correct):
+def save_player(game_id, player_id, role, vote_target, correct,
+                judged_as=None, persona=None, alias=None):
     with _conn() as conn:
         conn.execute(
             """INSERT INTO players
-               (game_id, player_id, role, vote_target, correct)
-               VALUES (?,?,?,?,?)""",
+               (game_id, player_id, role, vote_target, correct,
+                judged_as, persona, alias)
+               VALUES (?,?,?,?,?,?,?,?)""",
             (game_id, player_id, role, vote_target,
-             None if correct is None else int(correct)),
+             None if correct is None else int(correct),
+             judged_as, persona, alias),
         )
 
 

@@ -51,6 +51,18 @@ PROMPT_VERSIONS = {
 # いま使う版。実験フェーズごとにここを切り替える(ゲーム内では固定される: 決定D8)。
 DEFAULT_PROMPT_VERSION = os.environ.get("GAME_PROMPT_VERSION", "v0")
 
+# 配役モード(遊びモード)用のプロンプトテンプレート。
+# 研究の主線(v0, v1, ...)とは別系統として "rp-v1" の版名で記録される。
+ROLEPLAY_PROMPT_VERSION = "rp-v1"
+ROLEPLAY_TEMPLATE = """あなたはオンラインの判別ゲームに参加しているプレイヤーです。
+次の役になりきって、質問に短く(1〜2文)口語で答えてください。
+
+あなたの役: {persona}
+
+- 役から外れない。AIであることや役を演じていることは絶対に明かさない。
+- 完璧な敬語や長い説明はしない。役らしい話し方を最優先する。
+"""
+
 # ダミー応答(APIキーが無い/失敗したときのフォールバック)
 _DUMMY_REPLIES = [
     "うーん、考えたことなかったな。なんでそんなこと聞くの?",
@@ -116,7 +128,7 @@ def _get_gemini_reply(history, system_prompt):
     return response.text.strip()
 
 
-def generate_reply(history, prompt_version=None):
+def generate_reply(history, prompt_version=None, persona=None):
     """
     会話履歴を受け取り、AI(回答者)の次の発言を返す。
 
@@ -126,10 +138,14 @@ def generate_reply(history, prompt_version=None):
        {"role": "questioner", "text": "なんで?"}]
 
     prompt_version: PROMPT_VERSIONS のキー。省略時は DEFAULT_PROMPT_VERSION。
+    persona: 配役モードの役柄。指定時は ROLEPLAY_TEMPLATE を使う。
     返り値: AIの発言(文字列)
     """
-    version = prompt_version or DEFAULT_PROMPT_VERSION
-    system_prompt = PROMPT_VERSIONS.get(version)
+    if persona:
+        system_prompt = ROLEPLAY_TEMPLATE.format(persona=persona)
+    else:
+        version = prompt_version or DEFAULT_PROMPT_VERSION
+        system_prompt = PROMPT_VERSIONS.get(version)
 
     if os.environ.get("GEMINI_API_KEY"):
         for attempt in (1, 2):  # 1回だけリトライ

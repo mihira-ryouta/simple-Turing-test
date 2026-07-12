@@ -130,6 +130,24 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
     .prep-text { text-align: center; font-size: 14px; color: var(--muted); }
+    .role-banner {
+      margin: 8px 0; padding: 10px 12px; border-radius: 10px;
+      background: #23283a; border: 1px solid #3a4160;
+      font-size: 13px; line-height: 1.6;
+    }
+    .judge-panel { margin-top: 12px; }
+    .judge-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 0; border-bottom: 1px solid #2a2e3c;
+    }
+    .judge-row .alias { flex: 1; font-size: 14px; }
+    .judge-row button {
+      padding: 8px 14px; font-size: 13px;
+      background: #11141d; border: 1px solid #333; color: var(--text);
+    }
+    .judge-row button.sel-h { background: #2e7d32; border-color: #2e7d32; }
+    .judge-row button.sel-a { background: #c62828; border-color: #c62828; }
+    .reveal-list { text-align: left; font-size: 13px; margin-top: 10px; line-height: 1.8; }
   </style>
 </head>
 <body>
@@ -179,6 +197,7 @@
     <div class="screen menu-screen hidden" id="prepScreen">
       <div class="spinner"></div>
       <div class="prep-text" id="prepText">対戦相手を準備しています…</div>
+      <button class="start-btn hidden" id="groupStartBtn" onclick="hostStartGroup()">この人数で開始する</button>
       <button class="ghost-btn" onclick="cancelMatching()">キャンセル</button>
     </div>
 
@@ -190,34 +209,74 @@
           クイックマッチ<span class="mode-sub">すぐに対戦相手を探す</span>
         </button>
         <button class="mode-btn" onclick="chooseVisibility('private')">
-          プライベート<span class="mode-sub">合言葉で限定（準備中）</span>
+          プライベート<span class="mode-sub">合言葉で友達と対戦</span>
         </button>
       </div>
       <button class="ghost-btn" onclick="showScreen('modeScreen')">戻る</button>
     </div>
 
-    <!-- プライベート設定: 鍵 + 人数上限 (未実装のまま保持) -->
+    <!-- プライベート設定: 合言葉 + モード -->
     <div class="screen menu-screen hidden" id="privateScreen">
-      <div class="select-label">プライベートルームの設定</div>
+      <div class="select-label">プライベートルーム（1対1）</div>
       <label class="field-label">合言葉（ルームの鍵）</label>
       <input type="text" id="roomKeyInput" class="text-field" placeholder="例: neko123" autocomplete="off">
-      <label class="field-label">参加人数の上限</label>
-      <div class="num-row" id="maxPlayersRow">
-        <button class="num-btn" data-n="2">2</button>
-        <button class="num-btn sel" data-n="4">4</button>
-        <button class="num-btn" data-n="6">6</button>
-        <button class="num-btn" data-n="8">8</button>
-        <button class="num-btn" data-n="10">10</button>
+
+      <label class="field-label">対戦モード（部屋を作る人が選ぶ）</label>
+      <div class="mode-buttons">
+        <button class="mode-btn sel" id="pmHuman" onclick="choosePrivateMode('human')">
+          人間同士<span class="mode-sub">1対1</span>
+        </button>
+        <button class="mode-btn" id="pmShuffle" onclick="choosePrivateMode('shuffle')">
+          シャッフル<span class="mode-sub">友達かAIか</span>
+        </button>
+        <button class="mode-btn" id="pmGroup" onclick="choosePrivateMode('group')">
+          グループ<span class="mode-sub">みんなでAI探し</span>
+        </button>
       </div>
-      <div class="prep-note">※ プライベートルームはまだ遊べません（次の実装フェーズ）。</div>
+
+      <!-- グループ設定 (グループ選択時のみ表示) -->
+      <div id="groupConfig" class="hidden">
+        <label class="field-label">人間の人数（あなたを含む）</label>
+        <div class="num-row" id="gHumansRow">
+          <button class="num-btn sel" data-n="2">2</button>
+          <button class="num-btn" data-n="3">3</button>
+          <button class="num-btn" data-n="4">4</button>
+          <button class="num-btn" data-n="5">5</button>
+          <button class="num-btn" data-n="6">6</button>
+        </div>
+        <label class="field-label">AIの数</label>
+        <div class="num-row" id="gAiRow">
+          <button class="num-btn" data-n="0">0</button>
+          <button class="num-btn sel" data-n="1">1</button>
+          <button class="num-btn" data-n="2">2</button>
+          <button class="num-btn" data-n="3">3</button>
+        </div>
+        <label class="field-label">AIのふりをする人間の数</label>
+        <div class="num-row" id="gHaaRow">
+          <button class="num-btn sel" data-n="0">0</button>
+          <button class="num-btn" data-n="1">1</button>
+          <button class="num-btn" data-n="2">2</button>
+        </div>
+        <label class="field-label">配役モード（全員が役になりきる・遊び用）</label>
+        <div class="num-row" id="gRpRow">
+          <button class="num-btn sel" data-n="0">なし</button>
+          <button class="num-btn" data-n="1">あり</button>
+        </div>
+      </div>
+      <div class="prep-note" id="privateNote"></div>
+
       <div class="menu-actions">
+        <button class="start-btn" onclick="createPrivate()">部屋を作る（ホスト）</button>
+        <button class="start-btn" style="background:#3d4663" onclick="joinPrivate()">部屋に入る（ゲスト）</button>
         <button class="ghost-btn" onclick="showScreen('roomCreateScreen')">戻る</button>
       </div>
+      <div class="prep-note">※ 3人以上のグループ戦は次フェーズで実装予定。</div>
     </div>
 
     <!-- ゲーム本体(準備完了後に表示) -->
     <div id="gameArea" class="screen hidden">
     <div class="turn-info" id="turnInfo"></div>
+    <div class="role-banner hidden" id="roleBanner"></div>
 
     <div class="chat" id="chat"></div>
     <div class="wait-note hidden" id="waitNote">相手の返事を待っています…</div>
@@ -226,6 +285,15 @@
     <div class="input-row" id="inputRow">
       <input type="text" id="questionInput" placeholder="相手に質問する…" autocomplete="off">
       <button id="askBtn">送信</button>
+    </div>
+
+    <!-- グループ判定パネル (判定者のみ) -->
+    <div class="judge-box hidden" id="groupJudgeBox">
+      <div class="q">それぞれ、人間？ AI？</div>
+      <div class="judge-panel" id="judgePanel"></div>
+      <div class="judge-buttons" style="margin-top:12px">
+        <button id="groupJudgeSubmit" onclick="submitGroupJudgement()" disabled>この内容で判定する</button>
+      </div>
     </div>
 
     <!-- 判定フェーズ (質問者のみ) -->
@@ -351,6 +419,9 @@
       questionInput.disabled = false;
       askBtn.disabled = false;
       composeStartAt = null;
+      document.getElementById('roleBanner').classList.add('hidden');
+      document.getElementById('groupJudgeBox').classList.add('hidden');
+      document.getElementById('judgePanel').innerHTML = '';
     }
 
     function updateTurnInfo(turn) {
@@ -455,17 +526,111 @@
           questionInput.placeholder = '相手に質問する…';
           document.getElementById('headerHint').textContent =
             'あなたは質問者。相手に質問して、人間かAIかを当てよう。';
-        } else {
+        } else if (role === 'answerer') {
           questionInput.placeholder = '質問に答える…';
           document.getElementById('headerHint').textContent =
             'あなたは回答者。質問に答えよう。相手はあなたが人間かAIかを当てようとしている。';
           // 回答者は最初の質問が来るまで入力できない
           askBtn.disabled = true;
           questionInput.disabled = true;
+        } else {
+          // spectator: シャッフルで回答者がAIになった場合のホスト
+          document.getElementById('headerHint').textContent =
+            '今回はAIが回答します。あなたは観戦モード（会話は見えますが発言できません）。';
+          inputRow.classList.add('hidden');
         }
         updateTurnInfo(0);
         showScreen('gameArea');
         if (role === 'asker') questionInput.focus();
+      });
+
+      // (観戦者) 会話の中継
+      socket.on('spect_message', d => {
+        addMsg(d.text, d.kind === 'question' ? 'you' : 'them',
+               d.kind === 'question' ? '質問者' : 'AI(あなたの代役)');
+      });
+
+      // ---- グループ戦 ----
+      socket.on('group_lobby', d => {
+        showScreen('prepScreen');
+        let t = '合言葉「' + d.key + '」 参加 ' + d.joined + ' / ' + d.needed + ' 人';
+        if (d.is_host && d.joined >= 2) t += '　(全員揃わなくても開始できます)';
+        setPrepText(t);
+        document.getElementById('groupStartBtn').classList.toggle(
+          'hidden', !(d.is_host && d.joined >= 2));
+      });
+
+      socket.on('group_started', d => {
+        maxTurns = d.max_turns;
+        onlineGameId = null;
+        resetGameUi();
+        document.getElementById('groupStartBtn').classList.add('hidden');
+        groupLabels = {};
+        if (d.role === 'judge') {
+          role = 'group_judge';
+          groupAliases = d.aliases;
+          questionInput.placeholder = '全員への質問を入力…';
+          document.getElementById('headerHint').textContent =
+            'あなたは判定者。質問して、' + d.aliases.length + '人の中の人間とAIを見分けよう。';
+        } else {
+          role = 'group_answerer';
+          questionInput.placeholder = '質問に答える…';
+          document.getElementById('headerHint').textContent =
+            'あなたは「' + d.alias + '」として回答します。';
+          const banner = document.getElementById('roleBanner');
+          let msg = 'あなたは <b>' + d.alias + '</b> です。';
+          if (d.act_as_ai) msg += '<br>🤖 <b>ミッション: AIのふりをして答えてください。</b>判定者に「AI」と思わせたら勝ち！';
+          else msg += '<br>👤 自然に答えて「人間」と見抜かれたら勝ち。';
+          if (d.persona) msg += '<br>🎭 あなたの役: <b>' + d.persona + '</b>（この役になりきって答えて）';
+          banner.innerHTML = msg;
+          banner.classList.remove('hidden');
+          askBtn.disabled = true;
+          questionInput.disabled = true;
+        }
+        updateTurnInfo(0);
+        showScreen('gameArea');
+        if (d.role === 'judge') questionInput.focus();
+      });
+
+      socket.on('group_question', d => {
+        addMsg(d.text, 'them', '判定者からの質問 ' + d.turn + '/' + d.max_turns);
+        askBtn.disabled = false;
+        questionInput.disabled = false;
+        composeStartAt = null;
+        questionInput.focus();
+        turnInfo.textContent = '回答 ' + d.turn + ' / ' + d.max_turns;
+      });
+
+      socket.on('group_answer', d => {
+        waitNote.classList.add('hidden');
+        addMsg(d.text, 'them', d.alias + '（' + d.answered + '/' + d.panel_size + '）');
+      });
+
+      socket.on('group_turn_complete', d => {
+        turnInfo.textContent = '質問 ' + d.turn + ' / ' + d.max_turns + '　全員の回答が揃いました';
+        if (d.can_judge) {
+          inputRow.classList.add('hidden');
+          buildJudgePanel();
+          document.getElementById('groupJudgeBox').classList.remove('hidden');
+        } else {
+          askBtn.disabled = false;
+          questionInput.disabled = false;
+          questionInput.focus();
+        }
+      });
+
+      socket.on('group_result', d => {
+        onlineGameId = d.game_id;
+        showGroupResult(d);
+      });
+
+      // プライベートルーム関連
+      socket.on('private_created', d => {
+        setPrepText(d.msg + '　合言葉:「' + d.key + '」');
+      });
+      socket.on('private_error', d => {
+        showScreen('privateScreen');
+        document.getElementById('privateNote').textContent = d.msg;
       });
 
       // (回答者) 質問を受信
@@ -529,8 +694,72 @@
     }
 
     function cancelMatching() {
-      if (socket) { socket.disconnect(); socket = null; }
+      if (socket) {
+        socket.emit('cancel_private', {});
+        socket.disconnect();
+        socket = null;
+      }
       showScreen('modeScreen');
+    }
+
+    let groupAliases = [];
+    let groupLabels = {};
+
+    function buildJudgePanel() {
+      const panel = document.getElementById('judgePanel');
+      panel.innerHTML = '';
+      groupAliases.forEach(a => {
+        const row = document.createElement('div');
+        row.className = 'judge-row';
+        row.innerHTML = '<span class="alias">' + a + '</span>';
+        const bh = document.createElement('button');
+        bh.textContent = '人間';
+        const ba = document.createElement('button');
+        ba.textContent = 'AI';
+        bh.onclick = () => { groupLabels[a] = 'human';
+          bh.classList.add('sel-h'); ba.classList.remove('sel-a'); checkJudgeReady(); };
+        ba.onclick = () => { groupLabels[a] = 'ai';
+          ba.classList.add('sel-a'); bh.classList.remove('sel-h'); checkJudgeReady(); };
+        row.appendChild(bh); row.appendChild(ba);
+        panel.appendChild(row);
+      });
+    }
+    function checkJudgeReady() {
+      document.getElementById('groupJudgeSubmit').disabled =
+        !groupAliases.every(a => groupLabels[a]);
+    }
+    function submitGroupJudgement() {
+      socket.emit('submit_group_judgement', { labels: groupLabels });
+      document.getElementById('groupJudgeBox').classList.add('hidden');
+    }
+
+    function showGroupResult(d) {
+      inputRow.classList.add('hidden');
+      waitNote.classList.add('hidden');
+      document.getElementById('roleBanner').classList.add('hidden');
+      let html;
+      if (d.you_are === 'judge') {
+        resultBox.className = 'result ' + (d.score * 2 >= d.total ? 'correct' : 'wrong');
+        html = '判定終了！ 正解 <b>' + d.score + ' / ' + d.total + '</b>';
+      } else {
+        resultBox.className = 'result ' + (d.you_won ? 'correct' : 'wrong');
+        const kindLabel = d.your_kind === 'human_as_ai' ? 'AIのふり役' :
+                          d.your_kind === 'human' ? '人間' : 'AI';
+        html = 'あなた（' + d.alias + '・' + kindLabel + '）は「'
+          + (d.judged_as === 'ai' ? 'AI' : d.judged_as === 'human' ? '人間' : '未判定')
+          + '」と判定されました<br>' + (d.you_won ? '🎉 あなたの勝ち！' : '😢 見破られ/見過ごされました');
+      }
+      html += '<div class="reveal-list">' + d.reveal.map(r =>
+        r.alias + ': 正体=' + (r.truth === 'ai' ? 'AI' : '人間')
+        + (r.was_acting ? '（AIのふり役）' : '')
+        + (r.persona ? '／役: ' + r.persona : '')
+        + '　→ 判定: ' + (r.judged_as === 'ai' ? 'AI' : r.judged_as === 'human' ? '人間' : '—')
+        + (r.correct === true ? ' ✅' : r.correct === false ? ' ❌' : '')
+      ).join('<br>') + '</div>';
+      resultBox.innerHTML = html;
+      resultBox.classList.remove('hidden');
+      // グループは判定者の判定理由が多対象になるため、既存アンケートはスキップ
+      restartBtn.classList.remove('hidden');
     }
 
     function sendOnline() {
@@ -544,8 +773,13 @@
       if (role === 'asker') {
         waitNote.classList.remove('hidden');
         socket.emit('submit_question', { text: text, compose_time_ms: composeMs });
-      } else {
+      } else if (role === 'answerer') {
         socket.emit('submit_answer', { text: text, compose_time_ms: composeMs });
+      } else if (role === 'group_judge') {
+        waitNote.classList.remove('hidden');
+        socket.emit('submit_group_question', { text: text, compose_time_ms: composeMs });
+      } else if (role === 'group_answerer') {
+        socket.emit('submit_group_answer', { text: text, compose_time_ms: composeMs });
       }
     }
 
@@ -570,6 +804,17 @@
 
     function showResult(data, guess, youAre) {
       const answerLabel = data.answer === 'ai' ? 'AI' : '人間';
+      if (youAre === 'spectator') {
+        resultBox.className = 'result neutral';
+        resultBox.innerHTML = 'ゲーム終了<br>友達の判定: '
+          + (data.your_guess === 'ai' ? 'AI' : '人間')
+          + '（正体はAI）<br>'
+          + (data.correct ? '友達はAIを見破りました' : '友達はAIに騙されました');
+        inputRow.classList.add('hidden');
+        waitNote.classList.add('hidden');
+        restartBtn.classList.remove('hidden');
+        return;  // 観戦者はアンケート対象外
+      }
       if (youAre === 'answerer') {
         // 回答者側: 自分は判定していないので中立表示
         resultBox.className = 'result neutral';
@@ -697,12 +942,74 @@
       }
     }
 
-    document.getElementById('maxPlayersRow').addEventListener('click', e => {
-      if (e.target.tagName !== 'BUTTON') return;
-      config.maxPlayers = parseInt(e.target.dataset.n);
-      [...e.currentTarget.children].forEach(b => b.classList.remove('sel'));
-      e.target.classList.add('sel');
-    });
+    // --- プライベートルーム ---
+    let privateMode = 'human';
+    const groupCfg = { humans: 2, ai: 1, haa: 0, roleplay: false };
+    function choosePrivateMode(m) {
+      privateMode = m;
+      document.getElementById('pmHuman').classList.toggle('sel', m === 'human');
+      document.getElementById('pmShuffle').classList.toggle('sel', m === 'shuffle');
+      document.getElementById('pmGroup').classList.toggle('sel', m === 'group');
+      document.getElementById('groupConfig').classList.toggle('hidden', m !== 'group');
+      document.getElementById('privateNote').textContent =
+        m === 'shuffle'
+          ? 'シャッフル: ゲストが質問者。回答者はホストかAIかランダムに決まります。'
+          : m === 'group'
+          ? 'グループ: 判定者1人(ランダム選出)が質問し、全員が匿名で回答。最後に全員を人間/AIに判定します。'
+          : '';
+    }
+    function bindNumRow(id, fn) {
+      document.getElementById(id).addEventListener('click', e => {
+        if (e.target.tagName !== 'BUTTON') return;
+        fn(parseInt(e.target.dataset.n));
+        [...e.currentTarget.children].forEach(b => b.classList.remove('sel'));
+        e.target.classList.add('sel');
+      });
+    }
+    bindNumRow('gHumansRow', n => groupCfg.humans = n);
+    bindNumRow('gAiRow', n => groupCfg.ai = n);
+    bindNumRow('gHaaRow', n => groupCfg.haa = n);
+    bindNumRow('gRpRow', n => groupCfg.roleplay = n === 1);
+
+    let myGroupKey = null;
+    function createPrivate() {
+      const key = document.getElementById('roomKeyInput').value.trim();
+      if (!key) {
+        document.getElementById('privateNote').textContent = '合言葉を入力してください';
+        return;
+      }
+      mode = 'online';
+      showScreen('prepScreen');
+      const s = ensureSocket();
+      if (privateMode === 'group') {
+        setPrepText('グループ部屋を作成しています…');
+        myGroupKey = key;
+        s.emit('create_group', {
+          key: key, humans: groupCfg.humans, ai_count: groupCfg.ai,
+          human_as_ai: groupCfg.haa, roleplay: groupCfg.roleplay,
+        });
+      } else {
+        setPrepText('部屋を作成しています…');
+        s.emit('create_private', { key: key, mode: privateMode });
+      }
+    }
+
+    function hostStartGroup() {
+      if (socket && myGroupKey) socket.emit('start_group', { key: myGroupKey });
+    }
+
+    function joinPrivate() {
+      const key = document.getElementById('roomKeyInput').value.trim();
+      if (!key) {
+        document.getElementById('privateNote').textContent = '合言葉を入力してください';
+        return;
+      }
+      mode = 'online';
+      showScreen('prepScreen');
+      setPrepText('部屋を探しています…');
+      const s = ensureSocket();
+      s.emit('join_private', { key: key });
+    }
 
     // --- ゲーム後 ---
     function backToSelect() {
