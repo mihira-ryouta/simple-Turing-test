@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0B0B0D">
+<title>人工知能判別ゲーム | TURING TEST ― 人か、機械か。</title>
+<meta name="description" content="会話だけを手がかりに、相手が人間かAIかを判定するオンラインゲーム。あなたの判定は「人間らしさ」を調べる研究データになります。">
+<link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="%230B0B0D"/><path d="M22 50 C21 43 20 38 21 32 C21.5 27 23 22 27 19 C31 16 37 15.5 41 18 C44.5 20 46 24 45.5 27 C45 29 44 30 44.5 31.5 L47 36 C47.5 37 47 38 45.8 38.2 L44 38.5 C44 40 44.3 41.5 43.5 42.5 C42.5 43.7 40 43.5 38 43.2 C37.5 45.5 38 48 39 50" fill="none" stroke="%23E8E4D8" stroke-width="2.4" stroke-linecap="round"/><path d="M27 19 C29 21 33 22.5 37 22 C40 21.6 42.5 20 43.5 18.5" fill="none" stroke="%23E8E4D8" stroke-width="2.4" stroke-linecap="round"/></svg>'>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;700;800&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bk: #0B0B0D;          /* 夜 (表紙) */
+    --bk-2: #141417;
+    --wh: #E8E4D8;          /* 生成りの白 */
+    --dim: #8D8A80;
+    --line: #2A2A2E;
+    --shu: #D8483A;         /* 朱 = 人間 */
+    --ai:  #5B7FBD;         /* 藍 = AI */
+    --serif: "Shippori Mincho", "Hiragino Mincho ProN", serif;
+    --sans: "Zen Kaku Gothic New", "Hiragino Sans", sans-serif;
+    --mono: "IBM Plex Mono", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bk); color: var(--wh);
+    font-family: var(--sans); font-size: 15px; line-height: 2;
+  }
+  a { color: inherit; }
+  :focus-visible { outline: 2px solid var(--shu); outline-offset: 3px; }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 0 22px; }
+
+  /* 字間見出し (参考サイトの文法) */
+  .sp { letter-spacing: .55em; text-indent: .55em; }
+  h2.sp {
+    font-family: var(--mono); font-weight: 500;
+    font-size: clamp(20px, 4vw, 30px); text-align: center;
+    margin-bottom: 10px; color: var(--wh);
+  }
+  .sec-sub { text-align: center; font-family: var(--serif); font-size: 15px;
+    color: var(--dim); margin-bottom: 48px; }
+
+  /* 固定ナビ */
+  nav {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 10;
+    display: flex; align-items: center; gap: 26px;
+    padding: 14px 22px; background: rgba(11,11,13,.86);
+    backdrop-filter: blur(6px); border-bottom: 1px solid var(--line);
+    font-family: var(--mono); font-size: 11px;
+  }
+  nav .brand { letter-spacing: .3em; color: var(--wh); text-decoration: none; }
+  nav .links { display: flex; gap: 22px; margin-left: auto; }
+  nav .links a { color: var(--dim); text-decoration: none; letter-spacing: .25em; }
+  nav .links a:hover { color: var(--wh); }
+  nav .play {
+    margin-left: 10px; padding: 8px 18px; letter-spacing: .3em;
+    color: var(--bk); background: var(--wh); text-decoration: none;
+    border-radius: 2px; font-weight: 500;
+  }
+  @media (max-width: 700px) { nav .links { display: none; } }
+
+  /* ヒーロー */
+  header.hero {
+    min-height: 100svh; display: flex; align-items: center;
+    position: relative; overflow: hidden;
+    border-bottom: 1px solid var(--line);
+  }
+  .turing-art {
+    position: absolute; right: -6%; bottom: -8%;
+    width: min(62vw, 560px); opacity: .16; pointer-events: none;
+  }
+  .hero .kicker { font-family: var(--mono); font-size: 11px; letter-spacing: .4em;
+    color: var(--dim); margin-bottom: 26px; }
+  .hero h1 {
+    font-family: var(--mono); font-weight: 500;
+    font-size: clamp(26px, 6.4vw, 58px);
+    letter-spacing: .35em; line-height: 1.5; margin-bottom: 26px;
+  }
+  .hero .jp {
+    font-family: var(--serif); font-weight: 800;
+    font-size: clamp(22px, 4vw, 34px); line-height: 1.9; margin-bottom: 30px;
+  }
+  .hero .jp .h { color: var(--shu); }
+  .hero .jp .a { color: var(--ai); }
+  .hero p.lede { color: var(--dim); max-width: 32em; margin-bottom: 40px; }
+  .cta {
+    display: inline-block; font-family: var(--mono); letter-spacing: .45em;
+    text-indent: .45em; text-decoration: none;
+    padding: 18px 44px; border: 1px solid var(--wh); color: var(--wh);
+    border-radius: 2px; transition: background .15s ease, color .15s ease;
+  }
+  .cta:hover { background: var(--wh); color: var(--bk); }
+  .cta.solid { background: var(--wh); color: var(--bk); }
+  .cta.solid:hover { background: var(--shu); border-color: var(--shu); color: var(--wh); }
+  .scroll-hint { position: absolute; bottom: 26px; left: 50%;
+    transform: translateX(-50%); font-family: var(--mono); font-size: 10px;
+    letter-spacing: .4em; color: var(--dim); }
+
+  section { padding: 110px 0; border-bottom: 1px solid var(--line); }
+
+  /* マニフェスト */
+  .manifesto { text-align: center; font-family: var(--serif); }
+  .manifesto .big {
+    font-size: clamp(20px, 3.6vw, 30px); font-weight: 700; line-height: 2.3;
+  }
+  .manifesto .big b.h { color: var(--shu); font-weight: 800; }
+  .manifesto .big b.a { color: var(--ai); font-weight: 800; }
+  .manifesto .rest { margin-top: 40px; color: var(--dim); line-height: 2.4; }
+
+  /* 番号付きブロック (参考サイトの文法) */
+  .blocks { display: grid; gap: 0; border-top: 1px solid var(--line); }
+  .block {
+    display: grid; grid-template-columns: 90px 1fr; gap: 18px;
+    padding: 34px 0; border-bottom: 1px solid var(--line);
+  }
+  .block .no { font-family: var(--mono); font-size: 30px; color: var(--dim); }
+  .block h3 { font-family: var(--serif); font-size: 19px; font-weight: 700;
+    margin-bottom: 8px; }
+  .block p { color: var(--dim); font-size: 14px; max-width: 38em; }
+  @media (max-width: 560px) { .block { grid-template-columns: 54px 1fr; } }
+
+  /* 数字 (動向) */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1px; background: var(--line); border: 1px solid var(--line); }
+  .stat { background: var(--bk-2); padding: 34px 26px; }
+  .stat .n { font-family: var(--mono); font-size: 46px; }
+  .stat .n.h { color: var(--shu); } .stat .n.a { color: var(--ai); }
+  .stat p { color: var(--dim); font-size: 13px; margin-top: 10px; }
+  .src { font-family: var(--mono); font-size: 11.5px; color: var(--dim);
+    margin-top: 22px; }
+  .src a { color: var(--dim); }
+
+  /* 研究 */
+  .research p { max-width: 38em; margin: 0 auto 16px; color: #C9C5BA; }
+  .research .q {
+    font-family: var(--serif); font-size: clamp(19px, 3vw, 26px); font-weight: 800;
+    text-align: center; margin-bottom: 44px; line-height: 2.1;
+  }
+  .research .q em { font-style: normal; border-bottom: 2px solid var(--shu); }
+
+  /* データの取り扱い */
+  .pact {
+    border: 1px solid var(--shu); border-radius: 2px;
+    padding: 36px 30px; max-width: 44em; margin: 0 auto;
+    background: var(--bk-2);
+  }
+  .pact h3 { font-family: var(--serif); color: var(--shu); font-size: 17px;
+    letter-spacing: .1em; margin-bottom: 16px; }
+  .pact p { font-size: 14px; color: #C9C5BA; margin-bottom: 12px; }
+  .pact ul { margin: 14px 0 0; padding-left: 1.3em; color: #C9C5BA; font-size: 14px; }
+  .pact li { margin-bottom: 8px; }
+
+  /* 最終CTA */
+  .final { text-align: center; }
+  .final .ask { font-family: var(--serif); font-size: clamp(20px, 3.4vw, 28px);
+    font-weight: 800; line-height: 2.2; margin-bottom: 44px; }
+
+  footer { padding: 60px 0 80px; color: var(--dim); font-size: 13px; }
+  footer h4 { font-family: var(--mono); font-size: 11px; letter-spacing: .35em;
+    color: var(--dim); margin-bottom: 14px; }
+  footer .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 34px; margin-bottom: 44px; }
+  footer a { color: var(--dim); }
+  footer .fill { border-bottom: 1px dashed var(--dim); font-family: var(--mono); }
+  footer .copy { font-family: var(--mono); font-size: 10.5px; letter-spacing: .25em;
+    border-top: 1px solid var(--line); padding-top: 24px; }
+
+  /* スクロール出現 */
+  .rv { opacity: 0; transform: translateY(26px);
+    transition: opacity .8s ease, transform .8s ease; }
+  .rv.on { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .rv { opacity: 1; transform: none; transition: none; }
+    .cta { transition: none; }
+  }
+</style>
+</head>
+<body>
+
+<nav aria-label="サイト内">
+  <a class="brand" href="#top">TURING TEST</a>
+  <div class="links">
+    <a href="#concept">C O N C E P T</a>
+    <a href="#trend">T R E N D</a>
+    <a href="#about">A B O U T</a>
+    <a href="#research">R E S E A R C H</a>
+    <a href="#data">D A T A</a>
+  </div>
+  <a class="play" href="/play">P L A Y</a>
+</nav>
+
+<header class="hero" id="top">
+  <svg class="turing-art" viewBox="0 0 64 64" aria-hidden="true">
+    <path d="M22 50 C21 43 20 38 21 32 C21.5 27 23 22 27 19 C31 16 37 15.5 41 18 C44.5 20 46 24 45.5 27 C45 29 44 30 44.5 31.5 L47 36 C47.5 37 47 38 45.8 38.2 L44 38.5 C44 40 44.3 41.5 43.5 42.5 C42.5 43.7 40 43.5 38 43.2 C37.5 45.5 38 48 39 50"
+      fill="none" stroke="#E8E4D8" stroke-width="1.1" stroke-linecap="round"/>
+    <path d="M27 19 C29 21 33 22.5 37 22 C40 21.6 42.5 20 43.5 18.5"
+      fill="none" stroke="#E8E4D8" stroke-width="1.1" stroke-linecap="round"/>
+  </svg>
+  <div class="wrap">
+    <div class="kicker">JINKOU-CHINOU HANBETSU GAME / SINCE 1950, A. TURING</div>
+    <h1>T U R I N G<br>T E S T</h1>
+    <div class="jp">目の前の相手は、<span class="h">人</span>か、<span class="a">機械</span>か。</div>
+    <p class="lede">会話だけを手がかりに、相手が人間かAIかを判定するオンラインゲーム。あなたの「判定」は、そのまま「人間らしさ」を調べる研究データになります。</p>
+    <a class="cta solid" href="/play">P L A Y</a>
+  </div>
+  <div class="scroll-hint">S C R O L L</div>
+</header>
+
+<main>
+<section id="concept">
+  <div class="wrap">
+    <h2 class="sp rv">C O N C E P T</h2>
+    <p class="sec-sub rv">AIが人間より人間らしく振る舞う時代に</p>
+    <div class="manifesto rv">
+      <div class="big">
+        機械は、考えることができるか。<br>
+        1950年、アラン・チューリングはその問いを、<br>
+        答えられる形に置き換えた。<br><br>
+        ――会話だけで、<b class="h">人</b>と<b class="a">機械</b>を見分けられるか。
+      </div>
+      <div class="rest">
+        見分けられないなら、その機械は「考えている」とみなしてよいのではないか。<br>
+        「模倣ゲーム」と呼ばれたこの思考実験は、75年間、思考実験のままだった。<br><br>
+        いま、状況が変わった。<br>
+        SNSの返信。レビュー。恋愛相手。面接の向こう側。<br>
+        「相手が人間かどうか分からない」は、もう日常だ。<br><br>
+        AIを見抜く力は、これからの基礎的なリテラシーになる。<br>
+        このゲームは、それを安全な場所で試すための場所だ。
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="trend">
+  <div class="wrap">
+    <h2 class="sp rv">T R E N D</h2>
+    <p class="sec-sub rv">近年のAIの動向</p>
+    <div class="stats rv">
+      <div class="stat"><span class="n">68<small>%</small></span>
+        <p>150万人以上が参加した実験「Human or Not?」(2023) で、参加者が相手を正しく見分けられた割合。</p></div>
+      <div class="stat"><span class="n h">60<small>%</small></span>
+        <p>相手がAIだったときの正答率。当てずっぽう(50%)より、わずかに高い程度だった。</p></div>
+      <div class="stat"><span class="n a">73<small>%</small></span>
+        <p>2025年、ペルソナを与えたGPT-4.5が「人間だ」と判定された割合。本物の人間を上回った。</p></div>
+    </div>
+    <p class="src rv">出典:
+      AI21 Labs (2023) <a href="https://arxiv.org/abs/2305.20010" target="_blank" rel="noopener">arXiv:2305.20010</a> /
+      Jones &amp; Bergen (2025) <a href="https://arxiv.org/abs/2503.23674" target="_blank" rel="noopener">arXiv:2503.23674</a></p>
+  </div>
+</section>
+
+<section id="about">
+  <div class="wrap">
+    <h2 class="sp rv">A B O U T</h2>
+    <p class="sec-sub rv">このゲームでできること</p>
+    <div class="blocks">
+      <div class="block rv"><span class="no">1</span><div>
+        <h3>シングル</h3>
+        <p>ひとりで挑戦。5回の質問で、相手の正体を判定する。まずはここから。</p>
+      </div></div>
+      <div class="block rv"><span class="no">2</span><div>
+        <h3>クイックマッチ</h3>
+        <p>オンラインの誰かと対戦。相手は人間のことも、AIのこともある。どちらに当たるかは、始まるまで分からない。</p>
+      </div></div>
+      <div class="block rv"><span class="no">3</span><div>
+        <h3>シャッフル ― 友達か、AIか</h3>
+        <p>合言葉で部屋を作り、友達を招く。ただし回答者は「友達」か「AI」か、ランダムに入れ替わる。よく知る相手のはずが、当てられるか。</p>
+      </div></div>
+      <div class="block rv"><span class="no">4</span><div>
+        <h3>グループ戦</h3>
+        <p>最大6人＋AI。判定者が全員を尋問し、人間とAIをより多く見分けたら勝ち。「AIのふりをする人間」も紛れ込む。全員が役になりきる配役モードも。</p>
+      </div></div>
+    </div>
+  </div>
+</section>
+
+<section id="research" class="research">
+  <div class="wrap">
+    <h2 class="sp rv">R E S E A R C H</h2>
+    <p class="sec-sub rv">この研究が調べていること</p>
+    <div class="q rv">人間が人間たり得る<em>所以（ゆえん）</em>は、<br>どこにあるのか。</div>
+    <p class="rv">言葉の選び方。誤字。ためらい。返事の間（ま）。感情の出し方。人はどの手がかりで「これは人間だ」と感じ、AIのどの振る舞いが「機械っぽさ」として露呈するのか。</p>
+    <p class="rv">このゲームに集まる会話の記録と、あなたが残す「なぜそう判定したか」を突き合わせることで、「人間らしさ」の正体を実証的に描き出そうとしています。</p>
+    <p class="rv">方法上の特徴は、AIの「言葉（応答の中身）」と「振る舞い（返信の速さや間）」を同時に扱い、みなさんの判定理由をもとにAIを改良して、また判定してもらう――この循環を回し続けることにあります。遊ぶことが、そのまま研究への参加になります。</p>
+  </div>
+</section>
+
+<section id="data">
+  <div class="wrap">
+    <h2 class="sp rv">D A T A</h2>
+    <p class="sec-sub rv">データの取り扱いと、お願い</p>
+    <div class="pact rv">
+      <h3>プレイする前に、必ずお読みください</h3>
+      <p><b>このゲームの会話・判定・アンケートの記録は、研究の分析に用いるほか、AIの学習（改善）に用いられることがあります。</b>プレイをもって、この取り扱いに同意したものとします。</p>
+      <p><b>個人情報を書き込まないでください。</b>氏名・住所・電話番号・メールアドレス・学校名・勤務先など、あなたや他人を特定できる情報は、会話にもアンケートにも入力しないでください。</p>
+      <p>記録は匿名のデータとして扱われ、個人を特定する形で公開されることはありません。</p>
+      <ul>
+        <li>ゲーム終了後のアンケートには、<b>できるだけ答えてください</b>。「なぜそう判定したか」の一言が、この研究のいちばんの宝物です。</li>
+        <li>相手が人間の場合もあります。敬意を持って接してください。</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="final">
+  <div class="wrap">
+    <div class="ask rv">AIが人間のふりをする時代に。<br>あなたは、見抜けるか。</div>
+    <a class="cta solid rv" href="/play">P L A Y</a>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="cols">
+      <div>
+        <h4>L I N K S</h4>
+        <a href="/play">ゲームで遊ぶ</a><br>
+        <a href="https://arxiv.org/abs/2305.20010" target="_blank" rel="noopener">Human or Not? (2023)</a><br>
+        <a href="https://arxiv.org/abs/2503.23674" target="_blank" rel="noopener">LLMs Pass the Turing Test (2025)</a>
+      </div>
+      <div>
+        <h4>L I C E N S E</h4>
+        <span class="fill">（ここに記入：例 コードは MIT License）</span>
+      </div>
+      <div>
+        <h4>C O N T A C T</h4>
+        ご意見・ご質問はこちらまで:<br>
+        <span class="fill">（メールアドレスをここに記入）</span>
+      </div>
+    </div>
+    <div class="copy">© 2026 JINKOU-CHINOU HANBETSU GAME</div>
+  </div>
+</footer>
+
+<script>
+  // スクロール出現 (reduced-motion時はCSS側で常時表示)
+  const io = new IntersectionObserver(entries => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('on'); io.unobserve(e.target); } });
+  }, { threshold: 0.15 });
+  document.querySelectorAll('.rv').forEach(el => io.observe(el));
+</script>
+</body>
+</html>

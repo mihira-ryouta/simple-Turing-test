@@ -72,14 +72,25 @@ db.init_db()
 
 
 @app.route("/")
-def index():
+def site():
+    """ランディングページ (プロジェクト紹介)。ここから /play へ誘導する。"""
+    # プロトタイプの直接割当URL(?force=ai 等)の互換: 旧URLで来てもゲームへ
+    if request.args.get("force"):
+        return render_template("index.html")
+    return render_template("site.html")
+
+
+@app.route("/play")
+def play():
+    """ゲーム本体。"""
     return render_template("index.html")
 
 
 @app.route("/about")
 def about():
-    """プロジェクト紹介ページ (チューリングテストの説明・研究趣旨・データの取り扱い)。"""
-    return render_template("about.html")
+    """旧・紹介ページのURL互換。ランディングへ転送。"""
+    from flask import redirect
+    return redirect("/", code=302)
 
 
 # ==========================================================================
