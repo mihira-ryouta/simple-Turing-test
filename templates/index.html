@@ -4,150 +4,194 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>人工知能判別ゲーム</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;700;800&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #0f1117;
-      --panel: #1a1d28;
-      --accent: #6c8cff;
-      --you: #2a3550;
-      --them: #2d2a3a;
-      --text: #e6e8ef;
-      --muted: #8b90a3;
+      --paper: #F4F2EC;      /* 和紙 (背景) */
+      --panel: #FDFCF9;      /* 記録紙 (パネル) */
+      --ink: #23252B;        /* 墨 (文字) */
+      --ink-soft: #6A6C72;
+      --line: #D9D5CA;       /* 罫線 */
+      --shu: #C13A2E;        /* 朱 = 人間 */
+      --ai:  #34558B;        /* 藍 = AI/相手 */
+      --accent: var(--ink);
+      --bg: var(--paper); --text: var(--ink); --muted: var(--ink-soft);
+      --serif: "Shippori Mincho", "Hiragino Mincho ProN", serif;
+      --sans: "Zen Kaku Gothic New", "Hiragino Sans", sans-serif;
+      --mono: "IBM Plex Mono", monospace;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0; padding: 0;
-      font-family: -apple-system, "Hiragino Sans", "Yu Gothic", sans-serif;
-      background: var(--bg); color: var(--text);
+      font-family: var(--sans);
+      background: var(--paper); color: var(--ink);
       display: flex; justify-content: center;
     }
-    .app { width: 100%; max-width: 600px; min-height: 100vh; padding: 16px;
+    button { font-family: var(--sans); }
+    :focus-visible { outline: 2px solid var(--shu); outline-offset: 2px; }
+    .app { width: 100%; max-width: 620px; min-height: 100vh; padding: 16px;
       display: flex; flex-direction: column; }
-    header { text-align: center; padding: 12px 0; }
-    header h1 { font-size: 18px; margin: 0; }
-    header p { font-size: 13px; color: var(--muted); margin: 6px 0 0; }
-    .turn-info { font-size: 12px; color: var(--muted); text-align: center; margin: 8px 0; }
+    header { text-align: center; padding: 14px 0 10px; border-bottom: 1px solid var(--line); }
+    header h1 { font-family: var(--serif); font-weight: 800; font-size: 20px;
+      letter-spacing: .08em; margin: 0; }
+    header p { font-size: 12.5px; color: var(--muted); margin: 6px 0 0; }
+    .turn-info { font-family: var(--mono); font-size: 12px; color: var(--muted);
+      text-align: center; margin: 10px 0 6px; letter-spacing: .08em; }
+
+    /* 会話 = 記録紙 */
     .chat {
-      flex: 1; background: var(--panel); border-radius: 12px;
-      padding: 12px; overflow-y: auto; min-height: 300px;
-      display: flex; flex-direction: column; gap: 8px;
+      flex: 1; background: var(--panel); border: 1px solid var(--line);
+      border-radius: 6px; padding: 14px; overflow-y: auto; min-height: 300px;
+      display: flex; flex-direction: column; gap: 10px;
+      background-image: repeating-linear-gradient(
+        transparent, transparent 27px, rgba(35,37,43,.045) 28px);
     }
-    .msg { max-width: 80%; padding: 8px 12px; border-radius: 12px; font-size: 14px; line-height: 1.5; }
-    .msg.you { align-self: flex-end; background: var(--you); }
-    .msg.them { align-self: flex-start; background: var(--them); }
-    .msg .label { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
-    .wait-note { font-size: 12px; color: var(--muted); text-align: center; padding: 4px 0; }
+    .msg { max-width: 82%; padding: 8px 12px; font-size: 14px; line-height: 1.7;
+      border-radius: 4px; background: transparent; }
+    .msg.you { align-self: flex-end; border-right: 3px solid var(--shu); text-align: left; }
+    .msg.them { align-self: flex-start; border-left: 3px solid var(--ai); }
+    .msg .label { font-family: var(--mono); font-size: 10.5px; color: var(--muted);
+      margin-bottom: 3px; letter-spacing: .06em; }
+    .wait-note { font-size: 12px; color: var(--muted); text-align: center; padding: 6px 0; }
+
     .input-row { display: flex; gap: 8px; margin-top: 12px; }
     input[type=text] {
-      flex: 1; padding: 12px; border-radius: 10px; border: 1px solid #333;
-      background: #11141d; color: var(--text); font-size: 14px;
+      flex: 1; padding: 12px; border-radius: 4px; border: 1px solid var(--line);
+      background: var(--panel); color: var(--ink); font-size: 14px; font-family: var(--sans);
     }
+    input[type=text]:focus { border-color: var(--ink); outline: none; }
     button {
-      padding: 12px 16px; border: none; border-radius: 10px;
-      background: var(--accent); color: white; font-size: 14px; cursor: pointer;
+      padding: 12px 18px; border: 2px solid var(--ink); border-radius: 4px;
+      background: var(--ink); color: var(--panel); font-size: 14px; font-weight: 700;
+      cursor: pointer;
     }
-    button:disabled { opacity: 0.4; cursor: not-allowed; }
-    .judge-box { margin-top: 12px; text-align: center; }
-    .judge-box .q { font-size: 14px; margin-bottom: 10px; }
-    .judge-buttons { display: flex; gap: 10px; justify-content: center; }
-    .judge-buttons button { flex: 1; max-width: 180px; }
-    .result { margin-top: 16px; padding: 16px; border-radius: 12px;
-      background: var(--panel); text-align: center; font-size: 15px; }
-    .result.correct { border: 2px solid #4caf50; }
-    .result.wrong { border: 2px solid #e05656; }
-    .result.neutral { border: 2px solid #555; }
+    button:disabled { opacity: 0.35; cursor: not-allowed; }
+
+    /* 判定 = 押印 */
+    .judge-box { margin-top: 14px; text-align: center; }
+    .judge-box .q { font-family: var(--serif); font-size: 16px; margin-bottom: 12px; }
+    .judge-buttons { display: flex; gap: 14px; justify-content: center; }
+    .judge-buttons button { flex: 1; max-width: 190px; font-family: var(--serif);
+      font-weight: 800; font-size: 16px; padding: 14px; background: var(--panel); }
+    .judge-buttons button:first-child { color: var(--shu); border: 3px solid var(--shu);
+      border-radius: 50px; }
+    .judge-buttons button:last-child { color: var(--ai); border: 3px solid var(--ai);
+      border-radius: 6px; }
+
+    .result { margin-top: 16px; padding: 18px; border-radius: 6px;
+      background: var(--panel); border: 1px solid var(--line);
+      text-align: center; font-size: 15px; font-family: var(--serif); }
+    .result.correct { border: 2px solid var(--shu); }
+    .result.wrong { border: 2px solid var(--ai); }
+    .result.neutral { border: 2px solid var(--line); }
     .hidden { display: none; }
-    .restart { margin-top: 12px; background: #444; }
+    .restart { margin-top: 12px; background: transparent; color: var(--ink); }
 
     /* 選択画面 */
     .select-screen { display: flex; flex-direction: column; gap: 24px; padding: 24px 0; }
     .select-block { display: flex; flex-direction: column; gap: 12px; }
-    .select-label { font-size: 14px; color: var(--muted); }
+    .select-label { font-family: var(--serif); font-size: 15px; color: var(--ink); }
     .mode-buttons { display: flex; gap: 12px; }
     .mode-btn {
       flex: 1; display: flex; flex-direction: column; gap: 4px; align-items: center;
-      background: var(--panel); border: 2px solid #2a2e3c; color: var(--text);
-      padding: 20px 12px; border-radius: 12px; font-size: 15px; cursor: pointer;
+      background: var(--panel); border: 1px solid var(--line); color: var(--ink);
+      padding: 20px 10px; border-radius: 6px; font-size: 15px; font-weight: 700; cursor: pointer;
     }
-    .mode-btn.sel { border-color: var(--accent); background: #1d2235; }
+    .mode-btn.sel { border: 2px solid var(--ink); }
     .mode-sub { font-size: 11px; color: var(--muted); font-weight: normal; }
-    .prep-note { font-size: 13px; color: #e0a85a; min-height: 18px; }
-    .start-btn {
-      background: var(--accent); padding: 16px; border-radius: 12px;
-      font-size: 16px; font-weight: 500;
-    }
+    .prep-note { font-size: 12.5px; color: var(--shu); min-height: 18px; }
 
-    .survey { margin-top: 16px; padding: 16px; border-radius: 12px; background: var(--panel); }
-    .survey-title { font-size: 14px; font-weight: 500; margin-bottom: 12px; }
+    .start-btn {
+      background: var(--ink); color: var(--panel); padding: 16px; border-radius: 4px;
+      font-size: 16px; font-weight: 700; border: 2px solid var(--ink);
+    }
+    .ghost-btn { background: transparent; border: 1px solid var(--line); color: var(--muted); }
+
+    .survey { margin-top: 16px; padding: 18px; border-radius: 6px;
+      background: var(--panel); border: 1px solid var(--line); }
+    .survey-title { font-family: var(--serif); font-size: 15px; font-weight: 700; margin-bottom: 10px; }
     .survey-label { display: block; font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
     .confidence-row, .basis-row { display: flex; gap: 6px; flex-wrap: wrap; }
     .confidence-row button, .basis-row button {
-      background: #11141d; border: 1px solid #333; color: var(--text);
-      padding: 8px 12px; border-radius: 8px; font-size: 13px; cursor: pointer;
+      background: var(--paper); border: 1px solid var(--line); color: var(--ink);
+      padding: 8px 12px; border-radius: 4px; font-size: 13px; font-weight: 400; cursor: pointer;
     }
     .confidence-row button.sel, .basis-row button.sel {
-      background: var(--accent); border-color: var(--accent);
+      background: var(--ink); border-color: var(--ink); color: var(--panel);
     }
     .confidence-hint { font-size: 11px; color: var(--muted); margin-top: 6px; }
     textarea {
-      width: 100%; margin-top: 4px; padding: 10px; border-radius: 8px;
-      border: 1px solid #333; background: #11141d; color: var(--text);
+      width: 100%; margin-top: 4px; padding: 10px; border-radius: 4px;
+      border: 1px solid var(--line); background: var(--paper); color: var(--ink);
       font-size: 13px; font-family: inherit; resize: vertical;
     }
     .survey-actions { display: flex; gap: 10px; margin-top: 16px; }
     .survey-actions button { flex: 1; }
-    .skip-btn { background: #444; }
-    .submit-btn { background: var(--accent); }
+    .skip-btn { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+    .submit-btn { background: var(--ink); }
 
     /* 画面切り替え */
     .screen { flex: 1; display: flex; flex-direction: column; }
     .screen.hidden { display: none; }
     .menu-screen { justify-content: center; gap: 20px; padding: 24px 0; }
     .menu-hero { text-align: center; margin-bottom: 8px; }
-    .menu-title { font-size: 22px; font-weight: 600; }
-    .menu-sub { font-size: 13px; color: var(--muted); margin-top: 6px; }
+    .menu-title { font-family: var(--serif); font-size: 26px; font-weight: 800; letter-spacing: .04em; }
+    .menu-sub { font-size: 13px; color: var(--muted); margin-top: 8px; }
+    .menu-stamps { display: flex; gap: 14px; justify-content: center; margin-top: 18px; }
+    .menu-stamps .st { font-family: var(--serif); font-weight: 800; font-size: 18px;
+      width: 56px; height: 56px; display: inline-flex; align-items: center; justify-content: center;
+      writing-mode: vertical-rl; user-select: none; }
+    .menu-stamps .st.h { color: var(--shu); border: 3px solid var(--shu); border-radius: 50%;
+      transform: rotate(-6deg); }
+    .menu-stamps .st.a { color: var(--ai); border: 3px solid var(--ai); border-radius: 5px;
+      transform: rotate(4deg); }
     .menu-actions { display: flex; flex-direction: column; gap: 12px; }
-    .menu-desc { font-size: 13px; color: var(--muted); line-height: 1.6; }
-    .ghost-btn { background: transparent; border: 1px solid #333; color: var(--muted); }
+    .menu-desc { font-size: 13px; color: var(--muted); line-height: 1.8; }
 
     .field-label { font-size: 13px; color: var(--muted); margin: 6px 0; }
     .text-field {
-      padding: 12px; border-radius: 10px; border: 1px solid #333;
-      background: #11141d; color: var(--text); font-size: 14px;
+      padding: 12px; border-radius: 4px; border: 1px solid var(--line);
+      background: var(--panel); color: var(--ink); font-size: 14px;
     }
     .num-row { display: flex; gap: 8px; flex-wrap: wrap; }
     .num-btn {
-      flex: 1; min-width: 48px; background: #11141d; border: 1px solid #333;
-      color: var(--text); padding: 12px; border-radius: 8px; font-size: 14px; cursor: pointer;
+      flex: 1; min-width: 44px; background: var(--panel); border: 1px solid var(--line);
+      color: var(--ink); padding: 11px; border-radius: 4px; font-size: 14px; font-weight: 400; cursor: pointer;
     }
-    .num-btn.sel { background: var(--accent); border-color: var(--accent); }
+    .num-btn.sel { background: var(--ink); border-color: var(--ink); color: var(--panel); }
     .room-summary { font-size: 12px; color: var(--muted); padding: 8px 0; }
 
     .spinner {
-      width: 36px; height: 36px; margin: 0 auto 16px;
-      border: 3px solid #2a2e3c; border-top-color: var(--accent);
+      width: 34px; height: 34px; margin: 0 auto 16px;
+      border: 3px solid var(--line); border-top-color: var(--shu);
       border-radius: 50%; animation: spin 0.9s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.5s; } }
     .prep-text { text-align: center; font-size: 14px; color: var(--muted); }
+
     .role-banner {
-      margin: 8px 0; padding: 10px 12px; border-radius: 10px;
-      background: #23283a; border: 1px solid #3a4160;
-      font-size: 13px; line-height: 1.6;
+      margin: 8px 0; padding: 12px 14px; border-radius: 6px;
+      background: var(--panel); border: 1px solid var(--ai);
+      font-size: 13px; line-height: 1.8;
     }
     .judge-panel { margin-top: 12px; }
     .judge-row {
       display: flex; align-items: center; gap: 8px;
-      padding: 8px 0; border-bottom: 1px solid #2a2e3c;
+      padding: 8px 0; border-bottom: 1px dashed var(--line);
     }
-    .judge-row .alias { flex: 1; font-size: 14px; }
+    .judge-row .alias { flex: 1; font-size: 14px; font-family: var(--serif); }
     .judge-row button {
-      padding: 8px 14px; font-size: 13px;
-      background: #11141d; border: 1px solid #333; color: var(--text);
+      padding: 8px 16px; font-size: 13px; font-family: var(--serif); font-weight: 700;
+      background: var(--panel); border: 2px solid var(--line); color: var(--muted);
     }
-    .judge-row button.sel-h { background: #2e7d32; border-color: #2e7d32; }
-    .judge-row button.sel-a { background: #c62828; border-color: #c62828; }
-    .reveal-list { text-align: left; font-size: 13px; margin-top: 10px; line-height: 1.8; }
+    .judge-row button:first-of-type { border-radius: 50px; }
+    .judge-row button.sel-h { background: var(--panel); border-color: var(--shu); color: var(--shu); }
+    .judge-row button.sel-a { background: var(--panel); border-color: var(--ai); color: var(--ai); }
+    .reveal-list { text-align: left; font-size: 13px; margin-top: 12px; line-height: 2;
+      font-family: var(--sans); border-top: 1px dashed var(--line); padding-top: 10px; }
   </style>
 </head>
 <body>
@@ -161,10 +205,14 @@
     <div class="screen menu-screen" id="titleScreen">
       <div class="menu-hero">
         <div class="menu-title">人工知能判別ゲーム</div>
-        <div class="menu-sub">相手が人間かAIかを見抜こう</div>
+        <div class="menu-sub">会話だけで、見抜けるか。</div>
+        <div class="menu-stamps" aria-hidden="true">
+          <span class="st h">人間</span><span class="st a">機械</span>
+        </div>
       </div>
       <div class="menu-actions">
         <button class="start-btn" onclick="showScreen('modeScreen')">ゲーム開始</button>
+        <button class="ghost-btn" onclick="location.href='/about'">このプロジェクトについて</button>
         <button class="ghost-btn" onclick="quitGame()">終了</button>
       </div>
     </div>
@@ -298,10 +346,10 @@
 
     <!-- 判定フェーズ (質問者のみ) -->
     <div class="judge-box hidden" id="judgeBox">
-      <div class="q">相手は人間？ それともAI？</div>
+      <div class="q">判定してください。相手は――</div>
       <div class="judge-buttons">
-        <button onclick="judge('human')">人間だと思う</button>
-        <button onclick="judge('ai')">AIだと思う</button>
+        <button onclick="judge('human')">人間</button>
+        <button onclick="judge('ai')">機械</button>
       </div>
     </div>
 
