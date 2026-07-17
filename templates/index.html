@@ -306,6 +306,11 @@
           <button class="num-btn" data-n="1">1</button>
           <button class="num-btn" data-n="2">2</button>
         </div>
+        <label class="field-label">AIのレベル（数字が大きいほど見破りにくい）</label>
+        <div class="num-row" id="gLevelRow">
+          <button class="num-btn sel" data-n="1">1</button>
+          <button class="num-btn" data-n="2">2</button>
+        </div>
         <label class="field-label">配役モード（全員が役になりきる・遊び用）</label>
         <div class="num-row" id="gRpRow">
           <button class="num-btn sel" data-n="0">なし</button>
@@ -682,6 +687,15 @@
         document.getElementById('privateNote').textContent = d.msg;
       });
 
+      // 禁止パターンの質問(正体を直接聞く等)は送信されず突き返される
+      socket.on('question_rejected', d => {
+        waitNote.classList.add('hidden');
+        addMsg('(' + d.msg + ')', 'them', 'システム');
+        askBtn.disabled = false;
+        questionInput.disabled = false;
+        questionInput.focus();
+      });
+
       // (回答者) 質問を受信
       socket.on('question', d => {
         addMsg(d.text, 'them', '相手');
@@ -993,7 +1007,7 @@
 
     // --- プライベートルーム ---
     let privateMode = 'human';
-    const groupCfg = { humans: 2, ai: 1, haa: 0, roleplay: false };
+    const groupCfg = { humans: 2, ai: 1, haa: 0, roleplay: false, level: 1 };
     function choosePrivateMode(m) {
       privateMode = m;
       document.getElementById('pmHuman').classList.toggle('sel', m === 'human');
@@ -1018,6 +1032,7 @@
     bindNumRow('gHumansRow', n => groupCfg.humans = n);
     bindNumRow('gAiRow', n => groupCfg.ai = n);
     bindNumRow('gHaaRow', n => groupCfg.haa = n);
+    bindNumRow('gLevelRow', n => groupCfg.level = n);
     bindNumRow('gRpRow', n => groupCfg.roleplay = n === 1);
 
     let myGroupKey = null;
@@ -1036,6 +1051,7 @@
         s.emit('create_group', {
           key: key, humans: groupCfg.humans, ai_count: groupCfg.ai,
           human_as_ai: groupCfg.haa, roleplay: groupCfg.roleplay,
+          level: groupCfg.level,
         });
       } else {
         setPrepText('部屋を作成しています…');

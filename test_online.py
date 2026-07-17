@@ -151,7 +151,7 @@ check("人間は質問者固定 (b2)", m3 and m3["role"] == "asker")
 
 for turn in range(app_module.MAX_TURNS):
     c3.emit("submit_question",
-            {"text": f"AIへの質問{turn+1}", "compose_time_ms": 5000})
+            {"text": f"3番への質問{turn+1}", "compose_time_ms": 5000})
     a = wait_for(c3, "answer", 5)
     check(f"AI回答{turn+1}を受信", a is not None)
 
