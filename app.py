@@ -29,6 +29,7 @@
 
 import os
 import random
+import re
 import threading
 import time
 import uuid
@@ -66,6 +67,28 @@ OPPONENT_KEY = "p_opponent"
 ASKER_KEY = "p_asker"
 ANSWERER_KEY = "p_answerer"
 QUICK_ENTRY = "quick"
+
+# 質問者(人間)が禁止されている質問のパターン。
+#   相手の正体(AI/人間)を直接尋ねたり、生物学的な扱いを尋ねたりする質問は、
+#   会話内容からの判断という研究の主眼から外れるため、送信前に弾く。
+FORBIDDEN_QUESTION_PATTERNS = [
+    re.compile(r"AI|人工知能|ロボット|ボット|[Bb]ot", re.IGNORECASE),
+    re.compile(r"人間ですか|人間かどうか|人ですか|本物の人間|生身の人間|生きた人間"),
+    re.compile(r"生物ですか|生物学的|血液型|心臓は|呼吸は|臓器|DNA|遺伝子"),
+]
+FORBIDDEN_QUESTION_MSG = (
+    "相手の正体(AI/人間)を直接尋ねたり、生物学的な扱いを尋ねたりする質問は禁止です。"
+    "会話の内容から判断してください。"
+)
+
+
+def _forbidden_question_reason(text):
+    """禁止パターンに一致すれば理由文字列、問題なければNoneを返す。"""
+    for pat in FORBIDDEN_QUESTION_PATTERNS:
+        if pat.search(text):
+            return FORBIDDEN_QUESTION_MSG
+    return None
+
 
 # アプリ起動時にDBを用意
 db.init_db()
@@ -128,6 +151,9 @@ def ask():
     question = (data.get("question") or "").strip()
     if not question:
         return jsonify({"error": "質問が空です"}), 400
+    forbidden_reason = _forbidden_question_reason(question)
+    if forbidden_reason:
+        return jsonify({"error": forbidden_reason}), 400
     compose_time_ms = data.get("compose_time_ms")
 
     history = session.get("history", [])
@@ -706,6 +732,7 @@ def _on_create_group(data):
         humans = int(d.get("humans", 2))
         ai_count = int(d.get("ai_count", 1))
         haa = int(d.get("human_as_ai", 0))
+        level = int(d.get("level", 1))
     except (TypeError, ValueError):
         emit("private_error", {"msg": "人数の指定が不正です"})
         return
@@ -718,6 +745,9 @@ def _on_create_group(data):
         return
     if not (0 <= ai_count <= GROUP_MAX_AI):
         emit("private_error", {"msg": f"AIは0〜{GROUP_MAX_AI}体です"})
+        return
+    if not (1 <= level <= len(ai_backend.GROUP_LEVEL_VERSIONS)):
+        emit("private_error", {"msg": "レベルの指定が不正です"})
         return
     # 回答者パネル = (humans - 判定者1) + ai_count は最低1必要
     if (humans - 1) + ai_count < 1:
@@ -733,7 +763,8 @@ def _on_create_group(data):
         _pending_groups[key] = {
             "host_sid": sid, "members": [sid], "started": False,
             "config": {"humans": humans, "ai_count": ai_count,
-                       "human_as_ai": haa, "roleplay": roleplay},
+                       "human_as_ai": haa, "roleplay": roleplay,
+                       "level": level},
         }
     emit("group_lobby", {"key": key, "joined": 1, "needed": humans,
                          "is_host": True})
@@ -798,7 +829,8 @@ def _start_group(key):
         "saved": False,
         "prompt_version": (ai_backend.ROLEPLAY_PROMPT_VERSION
                            if cfg["roleplay"] else
-                           ai_backend.DEFAULT_PROMPT_VERSION) if has_ai else None,
+                           ai_backend.GROUP_LEVEL_VERSIONS[cfg["level"] - 1]
+                           ) if has_ai else None,
         "delay_model_version": (delay_model.DELAY_MODEL_VERSION
                                 if has_ai else None),
     }
@@ -902,6 +934,10 @@ def _on_group_question(data):
         return  # 前ターン未完 or 上限
     text = ((data or {}).get("text") or "").strip()
     if not text:
+        return
+    forbidden_reason = _forbidden_question_reason(text)
+    if forbidden_reason:
+        emit("question_rejected", {"msg": forbidden_reason})
         return
     room["turn"] += 1
     room["log"].append({"kind": "question", "turn": room["turn"],
@@ -1079,6 +1115,10 @@ def _on_question(data):
         return
     text = ((data or {}).get("text") or "").strip()
     if not text:
+        return
+    forbidden_reason = _forbidden_question_reason(text)
+    if forbidden_reason:
+        emit("question_rejected", {"msg": forbidden_reason})
         return
     room["history"].append({
         "role": "questioner", "text": text,
