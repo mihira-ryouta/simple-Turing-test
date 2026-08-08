@@ -1,0 +1,6 @@
+# 分析用の依存関係。Render にはデプロイされない。
+# 本番の requirements.txt には絶対に混ぜないこと(無料枠のビルド時間とメモリを消費する)。
+#   pip install -r analysis/requirements-analysis.txt
+pandas>=2.0
+jupyterlab
+janome        # 日本語の形態素解析(pure Python、辞書同梱、C拡張なし)

@@ -232,7 +232,7 @@ def mark_debriefed(game_id):
             "UPDATE games SET debriefed=1 WHERE game_id=?", (game_id,))
 
 
-# ---- 書き出し ----
+# 書き出し
 
 def export_json(path="export.json"):
     out = {}
