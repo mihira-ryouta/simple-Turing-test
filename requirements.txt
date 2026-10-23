@@ -2,5 +2,7 @@ flask>=3.0
 flask-socketio>=5.5
 google-genai>=1.0
 gunicorn>=22.0
+# gunicorn の gevent ワーカーが import するが、gunicorn の依存に含まれず入らないことがある
+packaging
 gevent>=24.2
 gevent-websocket>=0.10.1
