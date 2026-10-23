@@ -94,9 +94,9 @@
     .select-screen { display: flex; flex-direction: column; gap: 24px; padding: 24px 0; }
     .select-block { display: flex; flex-direction: column; gap: 12px; }
     .select-label { font-family: var(--serif); font-size: 15px; color: var(--ink); }
-    .mode-buttons { display: flex; gap: 12px; }
+    .mode-buttons { display: flex; gap: 12px; flex-wrap: wrap; }
     .mode-btn {
-      flex: 1; display: flex; flex-direction: column; gap: 4px; align-items: center;
+      flex: 1; min-width: 120px; display: flex; flex-direction: column; gap: 4px; align-items: center;
       background: var(--panel); border: 1px solid var(--line); color: var(--ink);
       padding: 20px 10px; border-radius: 6px; font-size: 15px; font-weight: 700; cursor: pointer;
     }
@@ -281,6 +281,9 @@
         <button class="mode-btn" id="pmGroup" onclick="choosePrivateMode('group')">
           グループ<span class="mode-sub">みんなでAI探し</span>
         </button>
+        <button class="mode-btn" id="pmChat" onclick="choosePrivateMode('chat')">
+          チャット<span class="mode-sub">お題で雑談してAI探し</span>
+        </button>
       </div>
 
       <!-- グループ設定 (グループ選択時のみ表示) -->
@@ -311,10 +314,43 @@
           <button class="num-btn sel" data-n="1">1</button>
           <button class="num-btn" data-n="2">2</button>
         </div>
-        <label class="field-label">配役モード（全員が役になりきる・遊び用）</label>
-        <div class="num-row" id="gRpRow">
-          <button class="num-btn sel" data-n="0">なし</button>
-          <button class="num-btn" data-n="1">あり</button>
+        <div id="gRpBlock">
+          <label class="field-label">配役モード（全員が役になりきる・遊び用）</label>
+          <div class="num-row" id="gRpRow">
+            <button class="num-btn sel" data-n="0">なし</button>
+            <button class="num-btn" data-n="1">あり</button>
+          </div>
+        </div>
+
+        <!-- チャット戦の追加設定 (チャット選択時のみ表示) -->
+        <div id="chatConfig" class="hidden">
+          <label class="field-label">雑談のラウンド数（このあと「誰が怪しいか」を2ラウンド）</label>
+          <div class="num-row" id="cRoundsRow">
+            <button class="num-btn" data-n="3">3</button>
+            <button class="num-btn sel" data-n="4">4</button>
+            <button class="num-btn" data-n="5">5</button>
+          </div>
+          <label class="field-label">1ラウンドの制限時間（秒）</label>
+          <div class="num-row" id="cDeadlineRow">
+            <button class="num-btn" data-n="30">30</button>
+            <button class="num-btn sel" data-n="45">45</button>
+            <button class="num-btn" data-n="60">60</button>
+            <button class="num-btn" data-n="90">90</button>
+            <button class="num-btn" data-n="120">120</button>
+            <button class="num-btn" data-n="180">180</button>
+          </div>
+          <label class="field-label">1投稿の文字数上限</label>
+          <div class="num-row" id="cCharRow">
+            <button class="num-btn" data-n="40">40</button>
+            <button class="num-btn" data-n="60">60</button>
+            <button class="num-btn sel" data-n="100">100</button>
+            <button class="num-btn" data-n="140">140</button>
+          </div>
+          <label class="field-label">お題</label>
+          <div class="num-row" id="cTopicRow">
+            <button class="num-btn sel" data-n="0">用意されたお題</button>
+            <button class="num-btn" data-n="1">みんなで案を出す</button>
+          </div>
         </div>
       </div>
       <div class="prep-note" id="privateNote"></div>
@@ -340,6 +376,7 @@
       <input type="text" id="questionInput" placeholder="相手に質問する…" autocomplete="off">
       <button id="askBtn">送信</button>
     </div>
+    <div class="wait-note hidden" id="charCount"></div>
 
     <!-- グループ判定パネル (判定者のみ) -->
     <div class="judge-box hidden" id="groupJudgeBox">
@@ -393,6 +430,17 @@
       <div class="survey-actions">
         <button class="skip-btn" onclick="skipSurvey()">スキップ</button>
         <button class="submit-btn" onclick="submitSurvey()">送信</button>
+      </div>
+    </div>
+
+    <!-- グループ戦の判定理由(任意・判定者のみ)。答え合わせの前に聞く -->
+    <div class="survey hidden" id="groupReason">
+      <div class="survey-title">なぜそう判定しましたか？（任意・研究用）</div>
+      <div class="confidence-hint">答え合わせの前に聞いています。空欄のままでも大丈夫です。</div>
+      <div id="groupReasonList"></div>
+      <div class="survey-actions">
+        <button class="skip-btn" onclick="finishGroupReason(false)">スキップ</button>
+        <button class="submit-btn" onclick="finishGroupReason(true)">送信して結果を見る</button>
       </div>
     </div>
 
@@ -476,6 +524,15 @@
       document.getElementById('roleBanner').classList.add('hidden');
       document.getElementById('groupJudgeBox').classList.add('hidden');
       document.getElementById('judgePanel').innerHTML = '';
+      document.getElementById('groupReason').classList.add('hidden');
+      document.getElementById('groupReasonList').innerHTML = '';
+      document.querySelector('#groupJudgeBox .q').textContent = 'それぞれ、人間？ AI？';
+      waitNote.textContent = '相手の返事を待っています…';
+      stopChatCountdown();
+      chatPhase = null;
+      chatPosted = false;
+      questionInput.removeAttribute('maxlength');
+      document.getElementById('charCount').classList.add('hidden');
     }
 
     function updateTurnInfo(turn) {
@@ -675,7 +732,126 @@
 
       socket.on('group_result', d => {
         onlineGameId = d.game_id;
-        showGroupResult(d);
+        // 判定者は答え合わせの前に判定理由を聞く(結果を見てからだと後付けになるため)
+        if (d.you_are === 'judge') showGroupReason(d);
+        else showGroupResult(d);
+      });
+
+      // ---- チャット戦 ----
+      socket.on('chat_started', d => {
+        onlineGameId = null;
+        resetGameUi();
+        document.getElementById('groupStartBtn').classList.add('hidden');
+        role = 'chat';
+        myAlias = d.alias;
+        groupLabels = {};
+        document.getElementById('headerHint').textContent =
+          'あなたは「' + d.alias + '」。お題に答えて、最後に誰が人間で誰がAIかを当てよう。';
+        const banner = document.getElementById('roleBanner');
+        let msg = 'あなたは <b>' + d.alias + '</b> です。参加者: ' + d.aliases.join('・');
+        msg += '<br>お題ごとに ' + d.deadline_s + '秒以内（' + d.char_limit
+          + '字まで）で投稿。締切で全員の投稿が一斉に公開されます。';
+        msg += '<br>雑談 ' + d.rounds + 'ラウンドのあと、「誰が怪しいか」を '
+          + d.discuss_rounds + 'ラウンド話してから判定します。';
+        if (d.act_as_ai) msg += '<br>🤖 <b>ミッション: AIのふりをしてください。</b>過半数に「AI」と思わせたら勝ち！';
+        else msg += '<br>👤 自然に話して、過半数に「人間」と見抜かれたら勝ち。';
+        banner.innerHTML = msg;
+        banner.classList.remove('hidden');
+        askBtn.disabled = true;
+        questionInput.disabled = true;
+        turnInfo.textContent = '開始を待っています…';
+        showScreen('gameArea');
+      });
+
+      socket.on('chat_proposal', d => {
+        chatPhase = 'proposal';
+        addMsg('お題の案を1つ出してください（任意）。集まった案からランダムに出題されます。',
+               'them', 'システム');
+        questionInput.placeholder = 'お題の案（' + d.max_len + '字まで・任意）';
+        questionInput.maxLength = d.max_len;
+        askBtn.disabled = false;
+        questionInput.disabled = false;
+        questionInput.focus();
+        startChatCountdown(d.deadline_ms, 'お題の募集');
+      });
+
+      socket.on('chat_propose_result', d => {
+        if (d.ok) {
+          addMsg('お題の案を受け付けました。他の人を待っています…', 'them', 'システム');
+          askBtn.disabled = true;
+          questionInput.disabled = true;
+        } else {
+          addMsg('(' + d.msg + ')', 'them', 'システム');
+          askBtn.disabled = false;
+          questionInput.disabled = false;
+        }
+      });
+
+      socket.on('chat_round', d => {
+        chatPhase = d.phase;
+        chatPosted = false;
+        const head = d.phase === 'talk'
+          ? 'お題 ' + d.round + ' / ' + d.total
+          : '詰め ' + d.round + ' / ' + d.total;
+        addMsg('【' + d.topic + '】', 'them', head);
+        questionInput.placeholder = 'このお題に投稿する…';
+        questionInput.maxLength = d.char_limit;
+        chatCharLimit = d.char_limit;
+        questionInput.value = '';
+        updateCharCount();
+        document.getElementById('charCount').classList.remove('hidden');
+        waitNote.classList.add('hidden');
+        askBtn.disabled = false;
+        questionInput.disabled = false;
+        composeStartAt = null;
+        questionInput.focus();
+        startChatCountdown(d.deadline_ms, head);
+      });
+
+      socket.on('chat_posted', () => {
+        chatPosted = true;
+        askBtn.disabled = true;
+        questionInput.disabled = true;
+        waitNote.textContent = '投稿しました。締切で全員の投稿が公開されます…';
+        waitNote.classList.remove('hidden');
+      });
+
+      socket.on('chat_reveal', d => {
+        stopChatCountdown();
+        chatPhase = 'reveal';
+        askBtn.disabled = true;
+        questionInput.disabled = true;
+        questionInput.value = '';
+        waitNote.classList.add('hidden');
+        document.getElementById('charCount').classList.add('hidden');
+        d.posts.forEach(p => {
+          const mine = p.alias === myAlias;
+          addMsg(p.text || '(未投稿)', mine ? 'you' : 'them',
+                 p.alias + (mine ? '（あなた）' : ''));
+        });
+        turnInfo.textContent = '公開されました';
+      });
+
+      socket.on('chat_vote', d => {
+        stopChatCountdown();
+        chatPhase = 'vote';
+        inputRow.classList.add('hidden');
+        waitNote.classList.add('hidden');
+        groupAliases = d.aliases;
+        groupLabels = {};
+        buildJudgePanel();
+        document.querySelector('#groupJudgeBox .q').textContent =
+          'あなた以外の全員について、人間？ AI？';
+        document.getElementById('groupJudgeBox').classList.remove('hidden');
+        turnInfo.textContent = '判定';
+      });
+
+      socket.on('chat_notice', d => addMsg('(' + d.msg + ')', 'them', 'システム'));
+
+      socket.on('chat_result', d => {
+        onlineGameId = d.game_id;
+        // 答え合わせの前に判定理由を聞く (グループの判定者と同じ)
+        showGroupReason(d);
       });
 
       // プライベートルーム関連
@@ -792,8 +968,98 @@
         !groupAliases.every(a => groupLabels[a]);
     }
     function submitGroupJudgement() {
-      socket.emit('submit_group_judgement', { labels: groupLabels });
+      if (role === 'chat') {
+        socket.emit('chat_vote', { labels: groupLabels });
+        waitNote.textContent = '他の人の判定を待っています…';
+        waitNote.classList.remove('hidden');
+      } else {
+        socket.emit('submit_group_judgement', { labels: groupLabels });
+      }
       document.getElementById('groupJudgeBox').classList.add('hidden');
+    }
+
+    // ===== チャット戦 =====
+    // chatPhase: 'proposal' | 'talk' | 'discuss' | 'reveal' | 'vote'
+    let myAlias = null;
+    let chatPhase = null;
+    let chatPosted = false;
+    let chatCharLimit = 100;
+    let chatTimer = null;
+    let chatDeadlineAt = null;
+    let lastDraftAt = 0;
+
+    function chatCanPost() {
+      return role === 'chat' && (chatPhase === 'talk' || chatPhase === 'discuss') && !chatPosted;
+    }
+
+    function startChatCountdown(ms, head) {
+      stopChatCountdown();
+      chatDeadlineAt = Date.now() + ms;
+      const tick = () => {
+        const left = Math.max(0, Math.ceil((chatDeadlineAt - Date.now()) / 1000));
+        turnInfo.textContent = head + '　残り ' + left + ' 秒';
+        if (left === 0) {
+          stopChatCountdown();
+          // 締切: 入力中の文を下書きとして送る(サーバが自動投稿する)。以降は入力不可
+          if (chatCanPost()) sendChatDraft(true);
+          askBtn.disabled = true;
+          questionInput.disabled = true;
+          turnInfo.textContent = head + '　締切';
+        }
+      };
+      tick();
+      chatTimer = setInterval(tick, 250);
+    }
+
+    function stopChatCountdown() {
+      if (chatTimer) clearInterval(chatTimer);
+      chatTimer = null;
+    }
+
+    function sendChatDraft(force) {
+      if (!socket || !chatCanPost()) return;
+      const now = Date.now();
+      if (!force && now - lastDraftAt < 800) return;  // 送りすぎない
+      lastDraftAt = now;
+      socket.emit('chat_draft', { text: questionInput.value });
+    }
+
+    function updateCharCount() {
+      document.getElementById('charCount').textContent =
+        questionInput.value.length + ' / ' + chatCharLimit + ' 字';
+    }
+
+    questionInput.addEventListener('input', () => {
+      if (!chatCanPost()) return;
+      updateCharCount();
+      sendChatDraft(false);
+    });
+    questionInput.addEventListener('compositionend', () => {
+      if (chatCanPost()) sendChatDraft(true);
+    });
+
+    function showChatResult(d) {
+      inputRow.classList.add('hidden');
+      waitNote.classList.add('hidden');
+      document.getElementById('roleBanner').classList.add('hidden');
+      const kindLabel = d.your_kind === 'human_as_ai' ? 'AIのふり役' : '人間';
+      resultBox.className = 'result ' + (d.you_won === false ? 'wrong' : 'correct');
+      let html = 'あなたの判定 正解 <b>' + d.score + ' / ' + d.total + '</b>';
+      if (d.my_voters > 0) {
+        html += '<br>あなた（' + d.alias + '・' + kindLabel + '）は '
+          + d.my_voters + '人中 ' + d.my_ai_votes + '人から「AI」と判定されました<br>'
+          + (d.you_won ? '🎉 あなたの勝ち！' : '😢 作戦失敗…');
+      }
+      html += '<div class="reveal-list">' + d.reveal.map(r =>
+        r.alias + ': 正体=' + (r.truth === 'ai' ? 'AI' : '人間')
+        + (r.was_acting ? '（AIのふり役）' : '')
+        + '　AI票 ' + r.ai_votes + '/' + r.voters
+        + '　→ あなた: ' + (r.judged_as === 'ai' ? 'AI' : r.judged_as === 'human' ? '人間' : '—')
+        + (r.correct === true ? ' ✅' : r.correct === false ? ' ❌' : '')
+      ).join('<br>') + '</div>';
+      resultBox.innerHTML = html;
+      resultBox.classList.remove('hidden');
+      restartBtn.classList.remove('hidden');
     }
 
     function showGroupResult(d) {
@@ -821,13 +1087,72 @@
       ).join('<br>') + '</div>';
       resultBox.innerHTML = html;
       resultBox.classList.remove('hidden');
-      // グループは判定者の判定理由が多対象になるため、既存アンケートはスキップ
+      // グループは判定理由が多対象になるため既存アンケートは使わず、
+      // 判定者には showGroupReason で対象ごとに聞いている
       restartBtn.classList.remove('hidden');
+    }
+
+    // ===== グループ戦の判定理由 (判定者のみ・任意) =====
+    let pendingGroupResult = null;
+
+    function showGroupReason(d) {
+      pendingGroupResult = d;
+      inputRow.classList.add('hidden');
+      waitNote.classList.add('hidden');
+      const list = document.getElementById('groupReasonList');
+      list.innerHTML = '';
+      d.reveal.filter(r => r.judged_as).forEach(r => {
+        const label = document.createElement('label');
+        label.className = 'survey-label';
+        label.textContent = r.alias + ' を「'
+          + (r.judged_as === 'ai' ? 'AI' : '人間') + '」と思った理由';
+        const ta = document.createElement('textarea');
+        ta.rows = 2;
+        ta.dataset.alias = r.alias;
+        ta.placeholder = '決め手になった発言、違和感など';
+        list.appendChild(label);
+        list.appendChild(ta);
+      });
+      document.getElementById('groupReason').classList.remove('hidden');
+    }
+
+    async function finishGroupReason(send) {
+      const d = pendingGroupResult;
+      if (send && d) {
+        const posts = [...document.querySelectorAll('#groupReasonList textarea')]
+          .filter(ta => ta.value.trim())
+          .map(ta => fetch('/survey', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              game_id: d.game_id,
+              respondent_id: d.respondent_id || 'p_judge',
+              target_id: 'p_' + ta.dataset.alias,
+              free_text: ta.value.trim(),
+            }),
+          }));
+        try { await Promise.all(posts); } catch (e) { /* 失敗しても結果は見せる */ }
+      }
+      document.getElementById('groupReason').classList.add('hidden');
+      pendingGroupResult = null;
+      if (d) (role === 'chat' ? showChatResult : showGroupResult)(d);
     }
 
     function sendOnline() {
       const text = questionInput.value.trim();
       if (!text) return;
+      if (role === 'chat') {
+        // 自分の投稿も締切の一斉公開で表示する (ここでは出さない)
+        askBtn.disabled = true;
+        questionInput.disabled = true;
+        if (chatPhase === 'proposal') {
+          socket.emit('chat_propose', { text: text });
+          questionInput.value = '';
+        } else if (chatCanPost()) {
+          socket.emit('chat_post', { text: text, compose_time_ms: takeComposeTime() });
+        }
+        return;
+      }
       const composeMs = takeComposeTime();
       askBtn.disabled = true;
       questionInput.disabled = true;
@@ -1013,12 +1338,18 @@
       document.getElementById('pmHuman').classList.toggle('sel', m === 'human');
       document.getElementById('pmShuffle').classList.toggle('sel', m === 'shuffle');
       document.getElementById('pmGroup').classList.toggle('sel', m === 'group');
-      document.getElementById('groupConfig').classList.toggle('hidden', m !== 'group');
+      document.getElementById('pmChat').classList.toggle('sel', m === 'chat');
+      document.getElementById('groupConfig').classList.toggle(
+        'hidden', m !== 'group' && m !== 'chat');
+      document.getElementById('gRpBlock').classList.toggle('hidden', m !== 'group');
+      document.getElementById('chatConfig').classList.toggle('hidden', m !== 'chat');
       document.getElementById('privateNote').textContent =
         m === 'shuffle'
           ? 'シャッフル: ゲストが質問者。回答者はホストかAIかランダムに決まります。'
           : m === 'group'
           ? 'グループ: 判定者1人(ランダム選出)が質問し、全員が匿名で回答。最後に全員を人間/AIに判定します。'
+          : m === 'chat'
+          ? 'チャット: 全員が匿名でお題に投稿し、締切で一斉公開。最後に全員が、自分以外を人間/AIに判定します。'
           : '';
     }
     function bindNumRow(id, fn) {
@@ -1034,6 +1365,11 @@
     bindNumRow('gHaaRow', n => groupCfg.haa = n);
     bindNumRow('gLevelRow', n => groupCfg.level = n);
     bindNumRow('gRpRow', n => groupCfg.roleplay = n === 1);
+    const chatCfg = { rounds: 4, deadline_s: 45, char_limit: 100, topic_source: 'fixed' };
+    bindNumRow('cRoundsRow', n => chatCfg.rounds = n);
+    bindNumRow('cDeadlineRow', n => chatCfg.deadline_s = n);
+    bindNumRow('cCharRow', n => chatCfg.char_limit = n);
+    bindNumRow('cTopicRow', n => chatCfg.topic_source = n === 1 ? 'submitted' : 'fixed');
 
     let myGroupKey = null;
     function createPrivate() {
@@ -1045,14 +1381,16 @@
       mode = 'online';
       showScreen('prepScreen');
       const s = ensureSocket();
-      if (privateMode === 'group') {
+      if (privateMode === 'group' || privateMode === 'chat') {
         setPrepText('グループ部屋を作成しています…');
         myGroupKey = key;
-        s.emit('create_group', {
+        const payload = {
           key: key, humans: groupCfg.humans, ai_count: groupCfg.ai,
           human_as_ai: groupCfg.haa, roleplay: groupCfg.roleplay,
           level: groupCfg.level,
-        });
+        };
+        if (privateMode === 'chat') Object.assign(payload, { game: 'chat' }, chatCfg);
+        s.emit('create_group', payload);
       } else {
         setPrepText('部屋を作成しています…');
         s.emit('create_private', { key: key, mode: privateMode });

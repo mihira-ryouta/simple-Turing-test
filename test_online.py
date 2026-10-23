@@ -392,6 +392,111 @@ check("グループでも合言葉の重複は拒否", errd is not None)
 e1.disconnect(); e2.disconnect()
 
 # ============================================================
+print("10. チャット戦 (人間3 + AI1 + AIのふり1・お題案あり・締切で下書き自動投稿)")
+_buf = {}
+
+
+def wait_ev(client, event, timeout=5.0):
+    """wait_for と違い、同時に届いた他のイベントを捨てずに取っておく。"""
+    q = _buf.setdefault(id(client), [])
+    deadline = time.time() + timeout
+    while True:
+        for pkt in client.get_received():
+            q.append((pkt["name"], pkt["args"][0] if pkt["args"] else {}))
+        for i, (name, arg) in enumerate(q):
+            if name == event:
+                del q[i]
+                return arg
+        if time.time() > deadline:
+            return None
+        time.sleep(0.05)
+
+
+# テスト用に2秒の締切を許可する (本番の選択肢は30秒〜)
+app_module.CHAT_DEADLINE_CHOICES_S = (2,) + app_module.CHAT_DEADLINE_CHOICES_S
+ch = socketio.test_client(app)
+ca = socketio.test_client(app)
+cb = socketio.test_client(app)
+chats = {"host": ch, "a": ca, "b": cb}
+ch.emit("create_group", {"key": "chat10", "game": "chat", "humans": 3,
+                         "ai_count": 1, "human_as_ai": 1, "rounds": 3,
+                         "deadline_s": 2, "char_limit": 40,
+                         "topic_source": "submitted"})
+check("チャット部屋のロビー作成", wait_ev(ch, "group_lobby", 2) is not None)
+ca.emit("join_private", {"key": "chat10"})
+cb.emit("join_private", {"key": "chat10"})
+cs = {n: wait_ev(c, "chat_started", 3) for n, c in chats.items()}
+check("全員に chat_started", all(cs.values()))
+check("参加者は4人 (人間3+AI1)", len(cs["host"]["aliases"]) == 4)
+check("AIのふり役が1人", sum(1 for s in cs.values() if s["act_as_ai"]) == 1)
+check("全員にお題募集", all(wait_ev(c, "chat_proposal", 3) for c in chats.values()))
+
+ca.emit("chat_propose", {"text": "AIについてどう思う"})
+rej = wait_ev(ca, "chat_propose_result", 2)
+check("正体に関わるお題案は拒否", rej is not None and rej["ok"] is False)
+for n, c in chats.items():
+    c.emit("chat_propose", {"text": f"{n}のお題"})
+total_rounds = 3 + app_module.CHAT_DISCUSS_ROUNDS
+topics = []
+for r in range(1, total_rounds + 1):
+    rounds = {n: wait_ev(c, "chat_round", 10) for n, c in chats.items()}
+    assert all(rounds.values()), f"ラウンド{r}が未着"
+    topics.append(rounds["host"]["topic"])
+    for n, c in chats.items():
+        if r == 1 and n == "host":
+            c.emit("chat_draft", {"text": "書きかけの文"})  # 投稿せずに締切を迎える
+        else:
+            c.emit("chat_post", {"text": f"{n}の投稿{r}" + "あ" * 50,
+                                 "compose_time_ms": 5000})
+    rv = wait_ev(ch, "chat_reveal", 30)
+    check(f"ラウンド{r}: 4人分が一斉公開", rv is not None and len(rv["posts"]) == 4)
+    if r == 1:
+        mine = next(p for p in rv["posts"] if p["alias"] == cs["host"]["alias"])
+        check("締切時の下書きが自動投稿される", mine["text"] == "書きかけの文")
+        check("文字上限(40)で切られる",
+              all(len(p["text"]) <= 40 for p in rv["posts"]))
+    for c in (ca, cb):
+        wait_ev(c, "chat_reveal", 5)
+check("お題案3つが雑談お題に使われる",
+      sorted(topics[:3]) == ["aのお題", "bのお題", "hostのお題"])
+check("詰めラウンドのお題", topics[3:] == app_module.CHAT_DISCUSS_TOPICS)
+
+for n, c in chats.items():
+    v = wait_ev(c, "chat_vote", 5)
+    assert v is not None, f"{n} に chat_vote が来ない"
+    check(f"{n}: 判定対象は自分以外の3人",
+          len(v["aliases"]) == 3 and cs[n]["alias"] not in v["aliases"])
+    c.emit("chat_vote", {"labels": {a: "human" for a in v["aliases"]}})
+res = {n: wait_ev(c, "chat_result", 5) for n, c in chats.items()}
+check("全員に chat_result", all(res.values()))
+check("全員 human 判定 → 各自 2/3 (AIだけ外す)",
+      all(r["score"] == 2 and r["total"] == 3 for r in res.values()))
+haa_r = next(r for n, r in res.items() if cs[n]["act_as_ai"])
+check("AIのふり役: 全員にhumanと判定され敗北", haa_r["you_won"] is False)
+
+gid = res["host"]["game_id"]
+cg = db_row("SELECT * FROM games WHERE game_id=?", (gid,))
+check("entry_type='private_chat'", cg["entry_type"] == "private_chat")
+check("result='6/9'", cg["result"] == "6/9")
+import json  # noqa: E402
+gc = json.loads(cg["game_config"])
+check("game_config に打鍵速度とAI上限",
+      gc["cps"] > 0 and 10 <= gc["ai_char_cap"] <= 40)
+check("votes 9行", len(db_rows("SELECT * FROM votes WHERE game_id=?", (gid,))) == 9)
+check("players 4行", len(db_rows("SELECT * FROM players WHERE game_id=?", (gid,))) == 4)
+cm = db_rows("SELECT * FROM messages WHERE game_id=? ORDER BY id", (gid,))
+kinds = [m["kind"] for m in cm]
+check("お題案3・お題3・詰めお題2",
+      kinds.count("topic_proposal") == 3 and kinds.count("topic") == 3
+      and kinds.count("discuss_topic") == 2)
+check("投稿20件 (うち下書き自動投稿1)",
+      sum(1 for k in kinds if k.startswith("post")) == 20
+      and kinds.count("post_auto") == 1)
+check("投稿はお題に reply_to で紐づく",
+      all(m["reply_to"] is not None for m in cm if m["kind"].startswith("post")))
+ch.disconnect(); ca.disconnect(); cb.disconnect()
+
+# ============================================================
 print()
 print(f"結果: {PASS} passed / {FAIL} failed")
 if os.path.exists("test_game.db"):
