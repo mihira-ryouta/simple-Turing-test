@@ -221,6 +221,6 @@ __marimo__/
 *.db
 prompts.txt
 analysis/
-
+.DS_Store
 
 過去の記録/
