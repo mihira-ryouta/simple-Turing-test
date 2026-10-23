@@ -2,12 +2,13 @@
 """
 ゲーム記録のデータベース (SQLite) ― 計測対応版。決定メモ§4に対応。
 
-研究用に5つのテーブルを持つ:
+研究用に6つのテーブルを持つ:
   games       … ゲーム単位 (構成と結果 + 実験条件・計測)
   players     … プレイヤー単位 (役割・投票・正誤)
   messages    … 会話ログ (質問と返し + タイピング計測)
   annotations … 発言への注釈 (どの発言が決め手/違和感か)
   surveys     … アンケート (ゲーム全体への任意回答)
+  votes       … 判定票 (チャット戦: 誰が誰を人間/AIと判定したか)
 
 アップグレードでの追加列 (どれも「後から遡って埋められない」ため最優先で追加):
   messages.char_count         … 本文の文字数 (全ターン)
@@ -21,6 +22,7 @@
   games.delay_model_version   … 使用した遅延モデルの版
   games.assignment_mode       … 'random'(本番: αドロー) / 'forced'(プロトタイプ: 直接割当)
   games.debriefed             … 根源公開(手がかり開示)を見せた場合 1
+  games.game_config           … ホストが選んだ設定とAI長さ計算の根拠 (JSON。チャット戦)
 
 init_db() は新規作成と既存DBの自動マイグレーションの両方を行う(冪等)。
 """
@@ -57,6 +59,8 @@ _MIGRATION_COLUMNS = [
     ("games",    "delay_model_version",   "TEXT"),
     ("games",    "assignment_mode",       "TEXT"),
     ("games",    "debriefed",             "INTEGER DEFAULT 0"),
+    ("games",    "game_config",           "TEXT"),
+    ("surveys",  "target_id",             "TEXT"),     # 回答の対象 player_id (グループの判定理由)
 ]
 
 
@@ -80,7 +84,8 @@ def init_db():
             prompt_version        TEXT,
             delay_model_version   TEXT,
             assignment_mode       TEXT,
-            debriefed             INTEGER DEFAULT 0
+            debriefed             INTEGER DEFAULT 0,
+            game_config           TEXT
         );
 
         CREATE TABLE IF NOT EXISTS players (
@@ -130,6 +135,16 @@ def init_db():
             confidence    INTEGER,
             basis         TEXT,
             free_text     TEXT,
+            target_id     TEXT,             -- 対象の player_id (グループ: 誰についての理由か)
+            FOREIGN KEY (game_id) REFERENCES games(game_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS votes (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_id   TEXT NOT NULL,
+            voter_id  TEXT,                 -- 判定した人の player_id
+            target_id TEXT,                 -- 判定された人の player_id
+            label     TEXT,                 -- 'ai' / 'human'
             FOREIGN KEY (game_id) REFERENCES games(game_id)
         );
         """)
@@ -149,7 +164,7 @@ def save_game(game_id, entry_type, player_count, ai_present,
               ground_truth_identity=None, backfilled=False,
               queue_wait_ms=None, ai_switch_deadline_ms=None,
               prompt_version=None, delay_model_version=None,
-              assignment_mode=None, debriefed=False):
+              assignment_mode=None, debriefed=False, game_config=None):
     with _conn() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO games
@@ -157,13 +172,13 @@ def save_game(game_id, entry_type, player_count, ai_present,
                 ai_present, ai_count, ai_model, result,
                 ground_truth_identity, backfilled, queue_wait_ms,
                 ai_switch_deadline_ms, prompt_version, delay_model_version,
-                assignment_mode, debriefed)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                assignment_mode, debriefed, game_config)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (game_id, _now(), entry_type, player_count,
              int(ai_present), ai_count, ai_model, result,
              ground_truth_identity, int(backfilled), queue_wait_ms,
              ai_switch_deadline_ms, prompt_version, delay_model_version,
-             assignment_mode, int(debriefed)),
+             assignment_mode, int(debriefed), game_config),
         )
 
 
@@ -214,14 +229,28 @@ def save_annotation(game_id, message_id, annotator_id, kind, free_text=""):
         )
 
 
-def save_survey(game_id, respondent_id, confidence, basis, free_text):
-    """アンケートは任意。未回答ならこの関数を呼ばなければよい。"""
+def save_survey(game_id, respondent_id, confidence, basis, free_text,
+                target_id=None):
+    """
+    アンケートは任意。未回答ならこの関数を呼ばなければよい。
+    target_id: グループ戦の判定理由のように「誰について」の回答なら対象の player_id。
+    """
     with _conn() as conn:
         conn.execute(
             """INSERT INTO surveys
-               (game_id, respondent_id, confidence, basis, free_text)
-               VALUES (?,?,?,?,?)""",
-            (game_id, respondent_id, confidence, basis, free_text),
+               (game_id, respondent_id, confidence, basis, free_text, target_id)
+               VALUES (?,?,?,?,?,?)""",
+            (game_id, respondent_id, confidence, basis, free_text, target_id),
+        )
+
+
+def save_vote(game_id, voter_id, target_id, label):
+    """判定票を1件保存する (チャット戦: 判定者が複数いるため players とは別に持つ)。"""
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO votes (game_id, voter_id, target_id, label)
+               VALUES (?,?,?,?)""",
+            (game_id, voter_id, target_id, label),
         )
 
 
@@ -237,7 +266,8 @@ def mark_debriefed(game_id):
 def export_json(path="export.json"):
     out = {}
     with _conn() as conn:
-        for table in ("games", "players", "messages", "annotations", "surveys"):
+        for table in ("games", "players", "messages", "annotations", "surveys",
+                      "votes"):
             rows = conn.execute(f"SELECT * FROM {table}").fetchall()
             out[table] = [dict(r) for r in rows]
     with open(path, "w", encoding="utf-8") as f:

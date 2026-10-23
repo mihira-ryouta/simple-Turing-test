@@ -45,7 +45,7 @@ import sqlite3
 import sys
 from collections import defaultdict
 
-TABLES = ("games", "players", "messages", "annotations", "surveys")
+TABLES = ("games", "players", "messages", "annotations", "surveys", "votes")
 
 
 def read_files(paths):
@@ -108,7 +108,7 @@ def merge(files):
                 merged["games"].append(dict(g))
                 seen_games.add(g["game_id"])
 
-        for t in ("players", "surveys"):
+        for t in ("players", "surveys", "votes"):
             for r in data.get(t, []):
                 if r["game_id"] in mine:
                     merged[t].append(dict(r))

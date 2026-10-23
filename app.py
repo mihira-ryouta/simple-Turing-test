@@ -27,6 +27,7 @@
   プロトタイプの直接割当: http://127.0.0.1:5000/?force=ai または ?force=human
 """
 
+import json
 import os
 import random
 import re
@@ -251,6 +252,7 @@ def survey():
         confidence=data.get("confidence"),
         basis=data.get("basis", ""),
         free_text=data.get("free_text", ""),
+        target_id=data.get("target_id"),
     )
     return jsonify({"status": "saved"})
 
@@ -306,7 +308,7 @@ def admin_export():
     out = {}
     with db._conn() as conn:
         for table in ("games", "players", "messages",
-                      "annotations", "surveys"):
+                      "annotations", "surveys", "votes"):
             rows = conn.execute(f"SELECT * FROM {table}").fetchall()
             out[table] = [dict(r) for r in rows]
     return jsonify(out)
@@ -722,19 +724,38 @@ def _group_room(room_id):
 
 @socketio.on("create_group")
 def _on_create_group(data):
-    """ホストがグループ部屋を作る。config: key/humans/ai_count/human_as_ai/roleplay"""
+    """
+    ホストがグループ部屋を作る。config: key/humans/ai_count/human_as_ai/roleplay
+    game='chat' ならチャット戦 (追加で rounds/deadline_s/char_limit/topic_source)。
+    """
     sid = request.sid
     d = data or {}
     key = (d.get("key") or "").strip()
+    game = d.get("game", "panel")
     try:
         humans = int(d.get("humans", 2))
         ai_count = int(d.get("ai_count", 1))
         haa = int(d.get("human_as_ai", 0))
         level = int(d.get("level", 1))
+        rounds = int(d.get("rounds", CHAT_ROUND_CHOICES[1]))
+        deadline_s = int(d.get("deadline_s", CHAT_DEADLINE_CHOICES_S[1]))
+        char_limit = int(d.get("char_limit", CHAT_CHAR_LIMIT_CHOICES[2]))
     except (TypeError, ValueError):
         emit("private_error", {"msg": "人数の指定が不正です"})
         return
     roleplay = bool(d.get("roleplay", False))
+    topic_source = d.get("topic_source", "fixed")
+    if game not in ("panel", "chat"):
+        emit("private_error", {"msg": "不正なゲーム形式です"})
+        return
+    if game == "chat":
+        roleplay = False  # 配役はパネル形式のみ
+        if (rounds not in CHAT_ROUND_CHOICES
+                or deadline_s not in CHAT_DEADLINE_CHOICES_S
+                or char_limit not in CHAT_CHAR_LIMIT_CHOICES
+                or topic_source not in ("fixed", "submitted")):
+            emit("private_error", {"msg": "チャットの設定が不正です"})
+            return
     if not key:
         emit("private_error", {"msg": "合言葉を入力してください"})
         return
@@ -760,9 +781,11 @@ def _on_create_group(data):
             return
         _pending_groups[key] = {
             "host_sid": sid, "members": [sid], "started": False,
-            "config": {"humans": humans, "ai_count": ai_count,
+            "config": {"game": game, "humans": humans, "ai_count": ai_count,
                        "human_as_ai": haa, "roleplay": roleplay,
-                       "level": level},
+                       "level": level, "rounds": rounds,
+                       "deadline_s": deadline_s, "char_limit": char_limit,
+                       "topic_source": topic_source},
         }
     emit("group_lobby", {"key": key, "joined": 1, "needed": humans,
                          "is_host": True})
@@ -786,6 +809,9 @@ def _start_group(key):
     if not g or g["started"]:
         return
     g["started"] = True
+    if g["config"].get("game") == "chat":
+        _start_chat(g)
+        return
     cfg = g["config"]
     members = list(g["members"])
 
@@ -879,8 +905,16 @@ def _group_ai_task(room_id, panel_index):
     if not room:
         return
     p = room["panel"][panel_index]
-    history = [{"role": "questioner", "text": e["text"]}
-               for e in room["log"] if e["kind"] == "question"]
+    # 質問と「このAI自身の」過去回答を交互に並べる。
+    # 質問だけを積むと未回答に見えて過去の質問にまでまとめて答えてしまうため、
+    # 各質問に自分の回答を対にして渡す。他のパネリストの回答はこのAIには
+    # 見えていない前提なので含めない。
+    history = []
+    for e in room["log"]:
+        if e["kind"] == "question":
+            history.append({"role": "questioner", "text": e["text"]})
+        elif e["kind"] == "answer" and e["alias"] == p["alias"]:
+            history.append({"role": "ai", "text": e["text"]})
     reply = ai_backend.generate_reply(
         history, prompt_version=room["prompt_version"],
         persona=p["persona"])
@@ -1074,6 +1108,552 @@ def _on_group_judgement(data):
     _rooms.pop(room_id, None)
 
 
+#  チャット戦 (プライベート・合言葉制・お題チャット形式)
+#
+#  構造:
+#    - 参加者 = 人間全員 + AI(ホスト設定数)。全員が匿名(プレイヤーA/B/C...)
+#    - お題が出る → 制限時間後に全員の投稿を一斉公開、をホスト指定ラウンド数
+#      (公開が一斉なので、返信の速さが判別の手がかりにならない = 遅延モデル不要)
+#    - 続けて「誰が怪しいか」を同じ形式で CHAT_DISCUSS_ROUNDS 回
+#    - 最後に人間全員が、自分以外の全員を人間/AIにラベル付け
+#    - 勝利条件: 人間=過半数に人間と判定される / AIのふり役=過半数にAIと判定される
+#
+#  お題: 固定リストから出す / 開始前に全員が案を出し、そこから抽選
+#        (案が足りなければ固定リストで補う)
+#  締切時に投稿していない人は、入力欄に残っていた文(下書き)を自動投稿する。
+#  AIへの入力:
+#    - 雑談ラウンド: お題と自分の過去の投稿だけ (他の人の投稿は見せない)
+#    - 詰めラウンド: 全員のこれまでの投稿一覧を見せる
+#  AIの長さ: 過去の人間の発言の打鍵速度(文字/秒の中央値) × 制限時間 を上限にする
+#            (文字上限でも頭打ち)。根拠は games.game_config に記録する。
+#
+#  研究データ上の注意:
+#    - entry_type='private_chat'。判定票は votes テーブル (判定者が複数いるため)
+#    - 投稿は messages.kind = post / post_auto(締切時の下書き) / post_empty
+#    - 詰めラウンドの投稿は他の参加者の判定に影響し合うため、判定は独立ではない
+
+CHAT_ENTRY = "private_chat"
+CHAT_ROUND_CHOICES = (3, 4, 5)
+CHAT_DEADLINE_CHOICES_S = (30, 45, 60, 90, 120, 180)
+CHAT_CHAR_LIMIT_CHOICES = (40, 60, 100, 140)
+CHAT_DISCUSS_ROUNDS = 2
+CHAT_PROPOSAL_S = 60         # お題案の募集時間
+CHAT_TOPIC_MAX = 40          # お題案の文字数上限
+CHAT_CLOSE_GRACE_S = 1.5     # 締切後、最後の下書きが届くのを待つ猶予
+CHAT_REVEAL_PAUSE_S = 4.0    # 公開から次のお題までの間 (読む時間)
+CHAT_AI_WAIT_MAX_S = 20.0    # 締切時にAIの生成が終わっていない場合に待つ上限
+CHAT_MIN_CPS_SAMPLES = 20    # 打鍵速度をDBから出すのに必要な最低件数
+
+CHAT_FIXED_TOPICS = [
+    "最近ハマってること", "休みの日の過ごし方", "子どもの頃の夢",
+    "コンビニでつい買うもの", "最近ちょっとイラッとしたこと", "好きな季節とその理由",
+    "朝ごはんは食べる派？抜く派？", "今いちばん行きたい場所", "最近見た夢",
+    "地味に自慢できること", "人生最後に食べたいもの", "最近買ってよかったもの",
+    "苦手な食べ物", "1万円もらったら何に使う？", "最近笑ったこと",
+    "雨の日の過ごし方", "犬派？猫派？", "いちばん古い記憶",
+    "寝る前にやってること", "最近の小さな失敗",
+]
+CHAT_DISCUSS_TOPICS = [
+    "この中でAIっぽいのは誰？ 理由も一言で",
+    "ここまでの話を踏まえて、最後に一言（疑ってる人・信じてる人など）",
+]
+
+# チャット戦の状態遷移用。ハンドラ・タイマー・AIタスクが並行して触るため。
+# (_start_group が _lock 内から呼ばれるので、_lock とは別のロックにする)
+_chat_lock = threading.RLock()
+
+
+def _chat_room(room_id):
+    room = _rooms.get(room_id)
+    return room if room and room.get("chat") else None
+
+
+def _chat_humans(room):
+    return [p for p in room["people"] if p["sid"] is not None and not p["left"]]
+
+
+def _chat_me(room, sid):
+    return next((p for p in room["people"] if p["sid"] == sid), None)
+
+
+def _chat_pause_s():
+    return 0.1 if os.environ.get("GAME_FAST_DELAY") == "1" else CHAT_REVEAL_PAUSE_S
+
+
+def _human_cps():
+    """
+    過去の人間の発言から打鍵速度(文字/秒)の中央値を求める。
+    compose_time_ms は人間の発言にしか入らない。外れ値(放置など)に強いよう中央値。
+    件数が足りなければ遅延モデルの暫定値を使う。返り値: (cps, 根拠の説明)
+    """
+    with db._conn() as conn:
+        rows = conn.execute(
+            "SELECT char_count, compose_time_ms FROM messages "
+            "WHERE compose_time_ms > 0 AND char_count > 0").fetchall()
+    rates = sorted(r[0] * 1000.0 / r[1] for r in rows)
+    if len(rates) < CHAT_MIN_CPS_SAMPLES:
+        p = delay_model.PARAMS
+        return (p["cps_min"] + p["cps_max"]) / 2, "placeholder"
+    return rates[len(rates) // 2], f"db_median_n{len(rates)}"
+
+
+def _start_chat(g):
+    """ロビーが揃ったらチャット戦を構成して開始する (_start_group から呼ばれる)。"""
+    cfg = dict(g["config"])
+    members = list(g["members"])
+    haa_n = min(cfg["human_as_ai"], len(members) - 1)
+    haa_set = set(random.sample(members, haa_n)) if haa_n else set()
+    people = [{"sid": m, "kind": "human_as_ai" if m in haa_set else "human",
+               "left": False} for m in members]
+    people += [{"sid": None, "kind": "ai", "left": False}
+               for _ in range(cfg["ai_count"])]
+    random.shuffle(people)
+    for i, p in enumerate(people):
+        p["alias"] = _alias_name(i)
+
+    has_ai = cfg["ai_count"] > 0
+    cps, cps_source = _human_cps()
+    cfg.update(cps=round(cps, 3), cps_source=cps_source,
+               ai_char_cap=max(10, min(cfg["char_limit"],
+                                       int(cps * cfg["deadline_s"]))),
+               discuss_rounds=CHAT_DISCUSS_ROUNDS)
+    room_id = "room_" + uuid.uuid4().hex[:8]
+    _rooms[room_id] = {
+        "game_id": "game_" + uuid.uuid4().hex[:12],
+        "chat": True,
+        "entry_type": CHAT_ENTRY,
+        "host": g["host_sid"],
+        "people": people,
+        "config": cfg,
+        "phase": None,           # proposal / talk / discuss / reveal / vote
+        "round": 0,
+        "topic": None,
+        "topics": [],
+        "proposals": {},         # alias -> お題案
+        "posts": {},             # 今ラウンドの投稿 alias -> {text, compose_time_ms}
+        "drafts": {},            # 今ラウンドの下書き alias -> text
+        "closed_round": 0,
+        "votes": {},             # alias -> {対象alias: 'ai'|'human'}
+        "log": [],
+        "saved": False,
+        "prompt_version": (ai_backend.GROUP_LEVEL_VERSIONS[cfg["level"] - 1]
+                           if has_ai else None),
+    }
+    for p in people:
+        if p["sid"] is not None:
+            _sid_room[p["sid"]] = room_id
+
+    aliases = [p["alias"] for p in people]
+    for p in people:
+        if p["sid"] is None:
+            continue
+        socketio.emit("chat_started",
+                      {"alias": p["alias"], "aliases": aliases,
+                       "act_as_ai": p["kind"] == "human_as_ai",
+                       "rounds": cfg["rounds"],
+                       "discuss_rounds": CHAT_DISCUSS_ROUNDS,
+                       "deadline_s": cfg["deadline_s"],
+                       "char_limit": cfg["char_limit"],
+                       "topic_source": cfg["topic_source"]},
+                      to=p["sid"])
+    with _chat_lock:
+        if cfg["topic_source"] == "submitted":
+            _chat_begin_proposals(room_id)
+        else:
+            _rooms[room_id]["topics"] = random.sample(CHAT_FIXED_TOPICS,
+                                                      cfg["rounds"])
+            _chat_begin_round(room_id, 1)
+
+
+def _chat_timer(room_id, wait_s, fn, *args):
+    """wait_s 秒後に fn(room_id, *args) を呼ぶ。状態の確認は fn 側で行う。"""
+    socketio.sleep(wait_s)
+    if _chat_room(room_id):
+        fn(room_id, *args)
+
+
+def _chat_begin_proposals(room_id):
+    room = _chat_room(room_id)
+    room["phase"] = "proposal"
+    for p in _chat_humans(room):
+        socketio.emit("chat_proposal",
+                      {"deadline_ms": CHAT_PROPOSAL_S * 1000,
+                       "max_len": CHAT_TOPIC_MAX},
+                      to=p["sid"])
+    socketio.start_background_task(_chat_timer, room_id, CHAT_PROPOSAL_S,
+                                   _chat_end_proposals)
+
+
+def _chat_end_proposals(room_id):
+    """お題案を締め切り、ラウンド数ぶんのお題を決める (足りなければ固定リストで補う)。"""
+    with _chat_lock:
+        room = _chat_room(room_id)
+        if not room or room["phase"] != "proposal":
+            return
+        n = room["config"]["rounds"]
+        for alias, text in room["proposals"].items():
+            room["log"].append({"kind": "topic_proposal", "round": 0,
+                                "alias": alias, "text": text,
+                                "compose_time_ms": None})
+        props = list(dict.fromkeys(room["proposals"].values()))  # 重複を除く
+        picked = random.sample(props, min(n, len(props)))
+        rest = [t for t in CHAT_FIXED_TOPICS if t not in picked]
+        topics = picked + random.sample(rest, n - len(picked))
+        random.shuffle(topics)
+        room["topics"] = topics
+        _chat_begin_round(room_id, 1)
+
+
+def _chat_begin_round(room_id, r):
+    room = _chat_room(room_id)
+    cfg = room["config"]
+    talk = r <= cfg["rounds"]
+    topic = (room["topics"][r - 1] if talk
+             else CHAT_DISCUSS_TOPICS[r - cfg["rounds"] - 1])
+    room.update(phase="talk" if talk else "discuss", round=r, topic=topic,
+                posts={}, drafts={})
+    room["log"].append({"kind": "topic" if talk else "discuss_topic",
+                        "round": r, "alias": None, "text": topic,
+                        "compose_time_ms": None})
+    for p in _chat_humans(room):
+        socketio.emit("chat_round",
+                      {"round": r, "total": cfg["rounds"] + CHAT_DISCUSS_ROUNDS,
+                       "phase": room["phase"], "topic": topic,
+                       "deadline_ms": cfg["deadline_s"] * 1000,
+                       "char_limit": cfg["char_limit"]},
+                      to=p["sid"])
+    for i, p in enumerate(room["people"]):
+        if p["sid"] is None:
+            socketio.start_background_task(_chat_ai_task, room_id, i, r)
+    socketio.start_background_task(
+        _chat_timer, room_id, cfg["deadline_s"] + CHAT_CLOSE_GRACE_S,
+        _chat_close_round, r)
+
+
+def _chat_ai_history(room, alias):
+    """AI1体ぶんの入力。雑談中はお題と自分の投稿のみ、詰めでは全員の投稿一覧を渡す。"""
+    note = ("(参加者全員が同じお題に同時に投稿するグループチャット。"
+            f"{room['config']['ai_char_cap']}字以内で投稿)")
+    own = {e["round"]: e["text"] for e in room["log"]
+           if e["alias"] == alias and e["kind"].startswith("post") and e["text"]}
+    history = []
+    for e in room["log"]:
+        if e["kind"] == "topic" and e["round"] in own:
+            history.append({"role": "questioner",
+                            "text": f"【お題】{e['text']}\n{note}"})
+            history.append({"role": "ai", "text": own[e["round"]]})
+    if room["phase"] == "talk":
+        history.append({"role": "questioner",
+                        "text": f"【お題】{room['topic']}\n{note}"})
+        return history
+    lines = [f"あなたは{alias}。これまでの全員の投稿:"]
+    for e in room["log"]:
+        if e["kind"] in ("topic", "discuss_topic") and e["round"] < room["round"]:
+            lines.append(f"\n[お題] {e['text']}")
+        elif e["kind"].startswith("post"):
+            lines.append(f"{e['alias']}: {e['text'] or '(未投稿)'}")
+    lines.append(f"\n【お題】{room['topic']}\n{note}")
+    history.append({"role": "questioner", "text": "\n".join(lines)})
+    return history
+
+
+def _chat_ai_task(room_id, panel_index, r):
+    """AI1体ぶんの投稿を生成する。公開は締切時に一斉なので遅延は入れない。"""
+    with _chat_lock:
+        room = _chat_room(room_id)
+        if not room or room["round"] != r:
+            return
+        p = room["people"][panel_index]
+        history = _chat_ai_history(room, p["alias"])
+        prompt_version = room["prompt_version"]
+        limit = room["config"]["char_limit"]
+    reply = ai_backend.generate_reply(history, prompt_version=prompt_version)
+    with _chat_lock:
+        room = _chat_room(room_id)
+        if not room or room["round"] != r or room["phase"] not in ("talk", "discuss"):
+            return
+        room["posts"][p["alias"]] = {"text": reply[:limit],
+                                     "compose_time_ms": None}
+        _chat_close_if_all_posted(room_id)
+
+
+def _chat_close_if_all_posted(room_id):
+    """全員が投稿済みなら締切を待たずに公開する (誰が先に出したかは漏れない)。"""
+    room = _chat_room(room_id)
+    if all(p["alias"] in room["posts"] for p in room["people"] if not p["left"]):
+        socketio.start_background_task(_chat_close_round, room_id, room["round"])
+
+
+def _chat_close_round(room_id, r):
+    """ラウンドを締め切り、全員の投稿を一斉に公開する。"""
+    # AIの生成が終わっていなければ少し待つ (ロックの外で)
+    waited = 0.0
+    while waited < CHAT_AI_WAIT_MAX_S:
+        room = _chat_room(room_id)
+        if not room or room["round"] != r:
+            return
+        if all(p["alias"] in room["posts"]
+               for p in room["people"] if p["sid"] is None):
+            break
+        socketio.sleep(0.5)
+        waited += 0.5
+    with _chat_lock:
+        room = _chat_room(room_id)
+        if (not room or room["round"] != r or room["closed_round"] >= r
+                or room["phase"] not in ("talk", "discuss")):
+            return
+        room["closed_round"] = r
+        room["phase"] = "reveal"
+        out = []
+        for p in room["people"]:
+            if p["left"]:
+                continue
+            a = p["alias"]
+            if a in room["posts"]:
+                kind = "post"
+                text = room["posts"][a]["text"]
+                ct = room["posts"][a]["compose_time_ms"]
+            elif room["drafts"].get(a):
+                kind, text, ct = "post_auto", room["drafts"][a], None
+            else:
+                kind, text, ct = "post_empty", "", None
+            room["log"].append({"kind": kind, "round": r, "alias": a,
+                                "text": text, "compose_time_ms": ct})
+            out.append({"alias": a, "text": text})
+        for p in _chat_humans(room):
+            socketio.emit("chat_reveal", {"round": r, "posts": out}, to=p["sid"])
+    socketio.sleep(_chat_pause_s())
+    with _chat_lock:
+        room = _chat_room(room_id)
+        if not room or room["phase"] != "reveal" or room["round"] != r:
+            return
+        if r < room["config"]["rounds"] + CHAT_DISCUSS_ROUNDS:
+            _chat_begin_round(room_id, r + 1)
+        else:
+            _chat_begin_vote(room_id)
+
+
+def _chat_vote_targets(room, alias):
+    return [p["alias"] for p in room["people"]
+            if not p["left"] and p["alias"] != alias]
+
+
+def _chat_begin_vote(room_id):
+    room = _chat_room(room_id)
+    room["phase"] = "vote"
+    for p in _chat_humans(room):
+        socketio.emit("chat_vote",
+                      {"aliases": _chat_vote_targets(room, p["alias"])},
+                      to=p["sid"])
+
+
+@socketio.on("chat_propose")
+def _on_chat_propose(data):
+    """お題案を1つ受け付ける (再送で上書き)。全員出したら締め切る。"""
+    sid = request.sid
+    room_id = _sid_room.get(sid)
+    with _chat_lock:
+        room = _chat_room(room_id)
+        if not room or room["phase"] != "proposal":
+            return
+        me = _chat_me(room, sid)
+        text = ((data or {}).get("text") or "").strip()[:CHAT_TOPIC_MAX]
+        if not me or not text:
+            return
+        if _forbidden_question_reason(text):
+            emit("chat_propose_result",
+                 {"ok": False, "msg": "正体(AI/人間)に関わるお題は使えません"})
+            return
+        room["proposals"][me["alias"]] = text
+        emit("chat_propose_result", {"ok": True})
+        if all(p["alias"] in room["proposals"] for p in _chat_humans(room)):
+            _chat_end_proposals(room_id)
+
+
+@socketio.on("chat_draft")
+def _on_chat_draft(data):
+    """入力中の文を受け取っておく。締切までに投稿されなければこれを自動投稿する。"""
+    sid = request.sid
+    with _chat_lock:
+        room = _chat_room(_sid_room.get(sid))
+        if not room or room["phase"] not in ("talk", "discuss"):
+            return
+        me = _chat_me(room, sid)
+        if not me or me["alias"] in room["posts"]:
+            return
+        text = ((data or {}).get("text") or "").strip()
+        room["drafts"][me["alias"]] = text[:room["config"]["char_limit"]]
+
+
+@socketio.on("chat_post")
+def _on_chat_post(data):
+    """今ラウンドの投稿 (1ラウンド1回)。公開は締切時に一斉。"""
+    sid = request.sid
+    room_id = _sid_room.get(sid)
+    with _chat_lock:
+        room = _chat_room(room_id)
+        if not room or room["phase"] not in ("talk", "discuss"):
+            return
+        me = _chat_me(room, sid)
+        if not me or me["alias"] in room["posts"]:
+            return
+        text = ((data or {}).get("text") or "").strip()
+        if not text:
+            return
+        room["posts"][me["alias"]] = {
+            "text": text[:room["config"]["char_limit"]],
+            "compose_time_ms": (data or {}).get("compose_time_ms")}
+        emit("chat_posted", {"round": room["round"]})
+        _chat_close_if_all_posted(room_id)
+
+
+@socketio.on("chat_vote")
+def _on_chat_vote(data):
+    """最終判定 {labels: {alias: 'ai'|'human'}}。自分以外の全員ぶん必要。"""
+    sid = request.sid
+    room_id = _sid_room.get(sid)
+    with _chat_lock:
+        room = _chat_room(room_id)
+        if not room or room["phase"] != "vote":
+            return
+        me = _chat_me(room, sid)
+        labels = (data or {}).get("labels") or {}
+        targets = _chat_vote_targets(room, me["alias"]) if me else []
+        if not me or any(labels.get(a) not in ("ai", "human") for a in targets):
+            return
+        room["votes"][me["alias"]] = {a: labels[a] for a in targets}
+        if all(p["alias"] in room["votes"] for p in _chat_humans(room)):
+            _chat_finish(room_id)
+
+
+def _chat_finish(room_id):
+    """全員の判定が揃ったら集計・保存し、各自に結果を送る。"""
+    room = _chat_room(room_id)
+    votes = room["votes"]
+    ai_votes = {p["alias"]: 0 for p in room["people"]}
+    n_voters = {p["alias"]: 0 for p in room["people"]}
+    for labels in votes.values():
+        for a, label in labels.items():
+            n_voters[a] += 1
+            ai_votes[a] += int(label == "ai")
+    _save_chat_game(room)
+
+    for p in _chat_humans(room):
+        mine = votes.get(p["alias"], {})
+        reveal, score, total = [], 0, 0
+        for q in room["people"]:
+            if q["alias"] == p["alias"]:
+                continue
+            truth_is_ai = q["kind"] == "ai"
+            label = mine.get(q["alias"])
+            ok = None if label is None else (label == "ai") == truth_is_ai
+            if ok is not None:
+                total += 1
+                score += int(ok)
+            reveal.append({"alias": q["alias"],
+                           "truth": "ai" if truth_is_ai else "human",
+                           "was_acting": q["kind"] == "human_as_ai",
+                           "judged_as": label, "correct": ok,
+                           "ai_votes": ai_votes[q["alias"]],
+                           "voters": n_voters[q["alias"]]})
+        n, k = n_voters[p["alias"]], ai_votes[p["alias"]]
+        if n == 0:
+            won = None
+        elif p["kind"] == "human_as_ai":
+            won = k * 2 > n        # 過半数にAIと思わせたら勝ち
+        else:
+            won = k * 2 < n        # 過半数に人間と見抜かれたら勝ち
+        socketio.emit("chat_result",
+                      {"alias": p["alias"], "your_kind": p["kind"],
+                       "score": score, "total": total,
+                       "my_ai_votes": k, "my_voters": n, "you_won": won,
+                       "reveal": reveal, "game_id": room["game_id"],
+                       "respondent_id": "p_" + p["alias"]},
+                      to=p["sid"])
+    for p in room["people"]:
+        if p["sid"] is not None:
+            _sid_room.pop(p["sid"], None)
+    _rooms.pop(room_id, None)
+
+
+def _save_chat_game(room):
+    if room.get("saved"):
+        return
+    game_id = room["game_id"]
+    ai_n = sum(1 for p in room["people"] if p["kind"] == "ai")
+    kind_of = {p["alias"]: p["kind"] for p in room["people"]}
+    n_correct = n_total = 0
+    for labels in room["votes"].values():
+        for a, label in labels.items():
+            n_total += 1
+            n_correct += int((label == "ai") == (kind_of[a] == "ai"))
+    db.save_game(
+        game_id=game_id, entry_type=CHAT_ENTRY,
+        player_count=len(room["people"]),
+        ai_present=ai_n > 0, ai_count=ai_n,
+        ai_model=ai_backend.MODEL_NAME if ai_n else None,
+        result=f"{n_correct}/{n_total}",
+        ground_truth_identity=None,
+        backfilled=False,
+        queue_wait_ms=None, ai_switch_deadline_ms=None,
+        prompt_version=room["prompt_version"],
+        delay_model_version=None,     # 一斉公開のため遅延モデルは使わない
+        assignment_mode=CHAT_ENTRY,
+        game_config=json.dumps(room["config"], ensure_ascii=False),
+    )
+    for p in room["people"]:
+        db.save_player(game_id, "p_" + p["alias"], role=p["kind"],
+                       vote_target=None, correct=None, alias=p["alias"])
+    for voter, labels in room["votes"].items():
+        for target, label in labels.items():
+            db.save_vote(game_id, "p_" + voter, "p_" + target, label)
+    # メッセージ: お題(speaker=system)→そのラウンドの投稿(reply_to=お題id)
+    topic_id = {}
+    for e in room["log"]:
+        speaker = "system" if e["alias"] is None else "p_" + e["alias"]
+        mid = db.save_message(
+            game_id, e["round"], speaker, e["kind"], e["text"],
+            reply_to=(topic_id.get(e["round"])
+                      if e["kind"].startswith("post") else None),
+            compose_time_ms=e["compose_time_ms"])
+        if e["kind"] in ("topic", "discuss_topic"):
+            topic_id[e["round"]] = mid
+    room["saved"] = True
+
+
+def _chat_on_leave(room_id, sid):
+    """チャット戦の途中退出。判定対象から外して続行する (人間が0人なら終了)。"""
+    with _chat_lock:
+        room = _chat_room(room_id)
+        if not room:
+            return
+        me = _chat_me(room, sid)
+        if me:
+            me["left"] = True
+        humans = _chat_humans(room)
+        if not humans:
+            _rooms.pop(room_id, None)
+            return
+        if me:
+            for p in humans:
+                socketio.emit("chat_notice",
+                              {"msg": me["alias"] + " が退出しました（判定対象から外れます）"},
+                              to=p["sid"])
+        if room["phase"] == "proposal":
+            if all(p["alias"] in room["proposals"] for p in humans):
+                _chat_end_proposals(room_id)
+        elif room["phase"] in ("talk", "discuss"):
+            _chat_close_if_all_posted(room_id)
+        elif room["phase"] == "vote":
+            # 退出者への判定票は無効にする (退出者自身の票は有効のまま)。
+            # これから投票する人の分は、受付時に対象から外れるので自動で落ちる
+            if me:
+                for labels in room["votes"].values():
+                    labels.pop(me["alias"], None)
+            if all(p["alias"] in room["votes"] for p in humans):
+                _chat_finish(room_id)
+
+
 def _ai_reply_task(room_id):
     """AI戦の回答生成タスク。遅延を挿入してから回答を送る (b1)。"""
     room = _rooms.get(room_id)
@@ -1246,6 +1826,9 @@ def _on_disconnect(*args):
     room_id = _sid_room.pop(sid, None)
     if room_id and room_id in _rooms:
         room = _rooms[room_id]
+        if room.get("chat"):
+            _chat_on_leave(room_id, sid)
+            return
         if room.get("group"):
             if sid == room["judge"]:
                 # 判定者が抜けたらゲーム終了
