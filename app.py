@@ -117,6 +117,22 @@ def about():
     return redirect("/", code=302)
 
 
+# 同意に関するところ
+CONSENT_VERSION = "2026-11-10b"  # 同意文を変えたら更新する
+
+
+@app.route("/consent", methods=["POST"])
+def consent():
+    """同意画面で「同意してはじめる」を押したことをセッションに記録する。"""
+    data = request.json or {}
+    if data.get("agreed") is not True:
+        return jsonify({"error": "consent required"}), 400
+    session["consent_version"] = CONSENT_VERSION
+    return jsonify({"status": "ok", "consent_version": CONSENT_VERSION})
+
+
+def _has_consent():
+    return session.get("consent_version") == CONSENT_VERSION
 
 #  シングル(HTTP) ― 計測・遅延・プロンプト版管理を追加
 #
@@ -127,6 +143,8 @@ def about():
 
 @app.route("/start", methods=["POST"])
 def start():
+    if not _has_consent():
+        return jsonify({"error": "consent required"}), 403
     """新しいゲームを開始。プロンプト/遅延モデルの版をこの時点で固定する(D8)。"""
     data = request.json or {}
     forced = data.get("force") == "ai"  # プロトタイプの直接割当 (D9)
@@ -465,8 +483,9 @@ def _ensure_monitor():
 
 @socketio.on("connect")
 def _on_connect(auth=None):
-    # 接続しただけでは何もしない。マッチングは join_quick で明示的に行う。
-    pass
+    # 同意していない接続は拒否する。マッチングは join_quick で明示的に行う。
+    if not _has_consent():
+        return False
 
 
 @socketio.on("join_quick")

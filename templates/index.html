@@ -152,6 +152,26 @@
     .menu-actions { display: flex; flex-direction: column; gap: 12px; }
     .menu-desc { font-size: 13px; color: var(--muted); line-height: 1.8; }
 
+    /* 同意画面: 文字・線は #1F2327 (rgb 31,35,39) の単色、周りは真っ白 */
+    .consent-overlay { --c-ink: #1F2327; --c-bg: #FFFFFF;
+      position: fixed; inset: 0; background: var(--c-bg); z-index: 100;
+      display: flex; align-items: center; justify-content: center; padding: 16px; }
+    .consent-overlay.hidden { display: none; }
+    .consent-box { background: var(--c-bg); color: var(--c-ink); border: 2px solid var(--c-ink); border-radius: 6px;
+      max-width: 560px; width: 100%; max-height: 90vh; display: flex; flex-direction: column; gap: 14px; padding: 22px; }
+    .consent-title { font-family: var(--serif); font-size: 19px; font-weight: 800; }
+    .consent-body { overflow-y: auto; font-size: 13.5px; line-height: 1.85; border: 1px solid var(--c-ink);
+      border-radius: 4px; padding: 12px 14px; background: var(--c-bg); }
+    .consent-body p { margin: 0 0 10px; }
+    .consent-body hr { border: none; border-top: 1px dashed var(--c-ink); margin: 12px 0; }
+    .consent-check { display: flex; gap: 10px; align-items: flex-start; font-size: 14px; cursor: pointer; }
+    .consent-check input { width: 18px; height: 18px; margin-top: 3px; flex-shrink: 0; accent-color: var(--c-ink); }
+    .consent-box .start-btn { background: var(--c-ink); border-color: var(--c-ink); color: var(--c-bg); }
+    .consent-box .ghost-btn { background: var(--c-bg); border-color: var(--c-ink); color: var(--c-ink); }
+    .consent-error { color: var(--c-ink); font-size: 13px; font-weight: 700; }
+    .consent-error.hidden { display: none; }
+    .start-btn:disabled { opacity: .4; cursor: not-allowed; }
+
     .field-label { font-size: 13px; color: var(--muted); margin: 6px 0; }
     .text-field {
       padding: 12px; border-radius: 4px; border: 1px solid var(--line);
@@ -213,11 +233,40 @@
         </div>
       </div>
       <div class="menu-actions">
-        <button class="start-btn" onclick="showScreen('modeScreen')">ゲーム開始</button>
+        <button class="start-btn" onclick="requestStart()">ゲーム開始</button>
         <button class="ghost-btn" onclick="location.href='/'">このプロジェクトについて</button>
         <button class="ghost-btn" onclick="quitGame()">終了</button>
       </div>
     </div>
+
+
+        <!-- 同意画面 (ゲーム開始前に必須) -->
+    <div class="consent-overlay hidden" id="consentOverlay" role="dialog" aria-modal="true" aria-labelledby="consentTitle">
+      <div class="consent-box">
+        <div class="consent-title" id="consentTitle">プレイ前の確認と同意</div>
+        <div class="consent-body">
+          <p>このゲームの会話・判定・アンケートの記録は、研究の分析およびAIの検証に用いられます。AIの学習には用いません。プレイをもって、この取り扱いに同意したものとします。</p>
+          <p><strong>個人情報を書き込まないでください。</strong>氏名・住所・電話番号・メールアドレス・学校名・勤務先など、あなたや他人を特定できる情報は、会話にもアンケートにも入力しないでください。</p>
+          <p>記録は匿名のデータとして扱われ、個人を特定する形で公開されることはありません。</p>
+          <hr>
+          <p><strong>対象年齢：</strong>18歳以上の方のみ参加できます。</p>
+          <p><strong>外部サービスへの送信：</strong>AIの応答を生成するため、会話の内容は、外部の事業者が提供する生成AIサービスにAPIを通じて送信されます(Geminiを筆頭に複数のAPIを使用しています。)。送信された内容は各事業者の規約・プライバシーポリシーに従って取り扱われ、事業者によっては、そのサービスの改善に利用されたり、事業者の担当者が確認したりする場合があります。</p>
+          <p><strong>参加は任意です。</strong>同意しなくても不利益はなく、プレイの途中でいつでもやめられます。</p>
+          <p><strong>削除について：</strong>記録は氏名等と結びつけずに保存するため、送信後に特定の方の記録だけを探し出して削除することはできません。</p>
+          <p><strong>お問い合わせ：</strong>【mira   （oimoai509@gmail.com）】</p>
+        </div>
+        <label class="consent-check">
+          <input type="checkbox" id="consentCheck" onchange="document.getElementById('consentAgreeBtn').disabled = !this.checked">
+          上記を読み、内容に同意します。また、18歳以上です。
+        </label>
+        <div class="consent-error hidden" id="consentError">通信に失敗しました。もう一度お試しください。</div>
+        <div class="menu-actions">
+          <button class="start-btn" id="consentAgreeBtn" disabled onclick="agreeConsent()">同意してはじめる</button>
+          <button class="ghost-btn" onclick="closeConsent()">同意しない（戻る）</button>
+        </div>
+      </div>
+    </div>
+
 
     <!-- モード選択 -->
     <div class="screen menu-screen hidden" id="modeScreen">
@@ -1289,6 +1338,34 @@
       roomKey: '',
       maxPlayers: 4,
     };
+
+        //  同意ゲート: 同意するまでモード選択へ進めない 
+    let consented = false;
+    function requestStart() {
+      if (consented) { showScreen('modeScreen'); return; }
+      document.getElementById('consentCheck').checked = false;
+      document.getElementById('consentAgreeBtn').disabled = true;
+      document.getElementById('consentError').classList.add('hidden');
+      document.getElementById('consentOverlay').classList.remove('hidden');
+    }
+    function closeConsent() {
+      document.getElementById('consentOverlay').classList.add('hidden');
+    }
+    async function agreeConsent() {
+      if (!document.getElementById('consentCheck').checked) return;
+      try {
+        const res = await fetch('/consent', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agreed: true }),
+        });
+        if (!res.ok) throw new Error(res.status);
+        consented = true;
+        closeConsent();
+        showScreen('modeScreen');
+      } catch (e) {
+        document.getElementById('consentError').classList.remove('hidden');
+      }
+    }
 
     function showScreen(id) {
       document.querySelectorAll('.screen').forEach(s => s.classList.add('hidden'));
